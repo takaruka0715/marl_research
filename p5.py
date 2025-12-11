@@ -14,6 +14,18 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 import random
+from dataclasses import dataclass
+
+# ---------- 追加: 設定を集中管理する Config ----------
+@dataclass
+class Config:
+    delivery_reward: float = 100.0
+    pickup_reward: float = 50.0
+    collision_penalty: float = -10.0
+    step_cost: float = -0.1
+    wait_penalty: float = -0.5
+    coop_bonus_threshold: float = 20.0
+    max_steps: int = 500
 
 # ==============================================================================
 # 1. 環境定義 (Environment)
@@ -35,27 +47,26 @@ class RestaurantEnv(AECEnv):
     metadata = {"name": "restaurant_v2_cooking", "render_modes": ["human", "rgb_array"]}
     
     def __init__(self, grid_size=15, layout_type='basic', enable_customers=True, 
-                 customer_spawn_interval=20, local_obs_size=5, coop_factor=0.5):
+                 customer_spawn_interval=20, local_obs_size=5, coop_factor=0.5,
+                 config: Config = None):
         super().__init__()
         
-        # ==============================================================================
-        # 【変更点】報酬パラメータを一か所にまとめました
-        #  ここを書き換えるだけで、すべての報酬・ペナルティ設定が変更されます
-        # ==============================================================================
+        # Config を使う（指定がなければデフォルトを使用）
+        self.config = config or Config()
         self.reward_params = {
-            'delivery': 100.0,      # 配膳成功時の報酬 (ゴール)
-            'pickup': 50.0,         # キッチンで料理を受け取った時の報酬
-            'collision': -10.0,     # 壁・客・他エージェントへの衝突ペナルティ
-            'step_cost': -0.1,      # 1ステップごとの移動コスト (動かない場合は0にする)
-            'wait_penalty': -0.5,   # 客を待たせすぎている時のペナルティ
-            'coop_bonus_threshold': 20.0 # 協調報酬を発生させる最低報酬ライン
+            'delivery': self.config.delivery_reward,
+            'pickup': self.config.pickup_reward,
+            'collision': self.config.collision_penalty,
+            'step_cost': self.config.step_cost,
+            'wait_penalty': self.config.wait_penalty,
+            'coop_bonus_threshold': self.config.coop_bonus_threshold
         }
 
         self.grid_size = grid_size
         self.layout_type = layout_type
         self.enable_customers = enable_customers
         self.customer_spawn_interval = customer_spawn_interval
-        self.max_steps = 500
+        self.max_steps = self.config.max_steps
         
         self.local_obs_size = local_obs_size
         self.coop_factor = coop_factor
@@ -299,25 +310,15 @@ class RestaurantEnv(AECEnv):
         
         return obs
     
-    def step(self, action):
-        agent = self.agent_selection
-        
-        if self.truncations[agent]:
-            if action is not None:
-                raise ValueError("Cannot step with a truncated agent")
-            self.agent_selection = self._agent_selector.next()
-            return
-        
-        self.rewards = {a: 0 for a in self.possible_agents}
-        
+    # ---------- ヘルパー: エージェント移動（衝突処理含む） ----------
+    def _move_agent(self, agent, action):
         x, y = self.agent_positions[agent]
         direction = self.agent_directions[agent]
         new_x, new_y = x, y
         new_direction = direction
-        
         dir_vectors = [(-1, 0), (0, 1), (1, 0), (0, -1)]
-        
-        if action == 0: 
+
+        if action == 0:
             dx, dy = dir_vectors[direction]
             new_x = max(0, min(self.grid_size - 1, x + dx))
             new_y = max(0, min(self.grid_size - 1, y + dy))
@@ -325,83 +326,99 @@ class RestaurantEnv(AECEnv):
             new_direction = (direction + 1) % 4
         elif action == 2:
             new_direction = (direction - 1) % 4
-        
+
         self.agent_directions[agent] = new_direction
         collision = False
-        
-        # --- 衝突判定 (変数参照に変更) ---
+
+        # 障害物チェック
         if (new_x, new_y) in self.obstacles:
             self.rewards[agent] = self.reward_params['collision']
             self.collision_count[agent] += 1
             collision = True
             new_x, new_y = x, y
-        
+
+        # 顧客位置チェック
         customer_positions = [c.position for c in self.customers if c.state in ['seated', 'ordered', 'served']]
         if (new_x, new_y) in customer_positions:
             self.rewards[agent] = self.reward_params['collision']
             self.collision_count[agent] += 1
             collision = True
             new_x, new_y = x, y
-            
+
+        # 他エージェントチェック
         other_positions = [pos for a, pos in self.agent_positions.items() if a != agent]
         if (new_x, new_y) in other_positions:
             self.rewards[agent] = self.reward_params['collision']
             self.collision_count[agent] += 1
             collision = True
             new_x, new_y = x, y
-        
+
         if not collision:
             self.agent_positions[agent] = (new_x, new_y)
-            
-        # ==============================================================================
-        # インタラクション処理 (変数参照に変更 & 衝突時でも判定可能に)
-        # ==============================================================================
-        
-        # 1. キッチンでの料理ピックアップ判定
+        return collision
+    
+    # ---------- ヘルパー: ピックアップ/配膳/移動コスト等の処理 ----------
+    def _process_interaction(self, agent, action):
+        x, y = self.agent_positions[agent]
+        new_x, new_y = x, y
+
+        # カウンター近接でのピックアップ
         is_near_counter = False
         if self.counter_pos:
             cx, cy = self.counter_pos
             if abs(new_x - cx) + abs(new_y - cy) <= 1:
                 is_near_counter = True
-        
         if is_near_counter:
             if self.ready_dishes > 0 and self.agent_inventory[agent] < 4:
                 self.ready_dishes -= 1
                 self.agent_inventory[agent] += 1
-                self.rewards[agent] += self.reward_params['pickup'] # 変数参照
-        
-        # 2. 客への配膳判定
+                self.rewards[agent] += self.reward_params['pickup']
+
+        # 配膳判定（近隣座席）
         if self.agent_inventory[agent] > 0:
             for order_pos in self.active_orders[:]:
                 ox, oy = order_pos
                 adjacent = [(ox-1, oy), (ox+1, oy), (ox, oy-1), (ox, oy+1)]
-                
                 if (new_x, new_y) in adjacent:
                     self.agent_inventory[agent] -= 1
-                    self.rewards[agent] += self.reward_params['delivery'] # 変数参照
+                    self.rewards[agent] += self.reward_params['delivery']
                     self.served_count[agent] += 1
                     self.active_orders.remove(order_pos)
-                    
                     for customer in self.customers:
                         if customer.seat_position == order_pos and customer.state == 'ordered':
                             customer.state = 'served'
                             customer.wait_time = 0
-                    break 
-        
-        # 移動コスト (変数参照)
+                    break
+
+        # 移動コストと待機ペナルティ
         if action == 0:
             self.rewards[agent] += self.reward_params['step_cost']
-        
-        # 待機ペナルティ (変数参照)
         if len(self.active_orders) > 3:
             self.rewards[agent] += self.reward_params['wait_penalty']
-            
-        # 協調報酬 (変数参照)
+
+        # 協調ボーナス
         current_reward = self.rewards[agent]
-        if current_reward >= self.reward_params['coop_bonus_threshold']: 
+        if current_reward >= self.reward_params['coop_bonus_threshold']:
             for other_agent in self.possible_agents:
                 if other_agent != agent:
                     self.rewards[other_agent] += current_reward * self.coop_factor
+
+    def step(self, action):
+        agent = self.agent_selection
+
+        if self.truncations[agent]:
+            if action is not None:
+                raise ValueError("Cannot step with a truncated agent")
+            self.agent_selection = self._agent_selector.next()
+            return
+
+        # 初期化された報酬ディクショナリを作る（各 step ごと）
+        self.rewards = {a: 0 for a in self.possible_agents}
+
+        # 移動処理（衝突処理はここで行われる）
+        self._move_agent(agent, action)
+        # ピックアップ／配膳などのインタラクション処理
+        self._process_interaction(agent, action)
 
         self.history.append({
             'agent_positions': self.agent_positions.copy(),
@@ -426,8 +443,7 @@ class RestaurantEnv(AECEnv):
             self.truncations = {a: True for a in self.possible_agents}
         
         self.agent_selection = self._agent_selector.next()
-
-
+    
 # ==============================================================================
 # 2. 学習用クラス (Agents & Buffer)
 # ==============================================================================
