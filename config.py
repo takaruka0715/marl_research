@@ -24,6 +24,7 @@ class AgentConfig:
     gamma: float = 0.95
     batch_size: int = 128
     buffer_capacity: int = 50000
+    use_vdn: bool = False  # VDN を使用するか
 
 @dataclass
 class TrainingConfig:
@@ -32,3 +33,8 @@ class TrainingConfig:
     use_shared_replay: bool = True
     target_update_interval: int = 10
     log_interval: int = 100
+    agent_config: AgentConfig = None
+    
+    def __post_init__(self):
+        if self.agent_config is None:
+            self.agent_config = AgentConfig()
