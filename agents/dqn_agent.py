@@ -98,12 +98,13 @@ class DQNAgent:
 
 
 class VDNAgent:
-    """Value Decomposition Networks (VDN) を用いたマルチエージェント"""
+    """Value Decomposition Networks (VDN) を用いたマルチエージェント (修正版)"""
     def __init__(self, state_dim, action_dim, num_agents=2, lr=0.0001, shared_buffer=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.action_dim = action_dim
         self.num_agents = num_agents
         
+        # 修正: VDNNetworkはリストを返すようになった
         self.q_network = VDNNetwork(state_dim, action_dim, num_agents).to(self.device)
         self.target_network = VDNTargetNetwork(state_dim, action_dim, num_agents).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
@@ -125,38 +126,21 @@ class VDNAgent:
         self.update_counter = 0
     
     def select_actions(self, states_dict):
-        """
-        全エージェントの行動を選択
-        Args:
-            states_dict: Dict[agent_name, state] (各エージェントの状態)
-        Returns:
-            Dict[agent_name, action]
-        """
+        """全エージェントの行動を選択"""
         actions = {}
-        
         for agent_name, state in states_dict.items():
             if random.random() < self.epsilon:
                 actions[agent_name] = random.randint(0, self.action_dim - 1)
             else:
                 with torch.no_grad():
                     state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-                    # エージェントのインデックスを取得（agent_0 -> 0, agent_1 -> 1）
                     agent_idx = int(agent_name.split('_')[1])
                     q_local = self.q_network.local_q_networks[agent_idx](state_tensor)
                     actions[agent_name] = q_local.argmax().item()
-        
         return actions
     
     def store_transition(self, state_dict, action_dict, reward_dict, next_state_dict, done_dict):
-        """
-        マルチエージェント経験を保存
-        Args:
-            state_dict: Dict[agent_name, state]
-            action_dict: Dict[agent_name, action]
-            reward_dict: Dict[agent_name, reward]
-            next_state_dict: Dict[agent_name, next_state]
-            done_dict: Dict[agent_name, done]
-        """
+        """マルチエージェント経験を保存"""
         experience = (state_dict, action_dict, reward_dict, next_state_dict, done_dict)
         if self.use_shared_buffer:
             self.memory.add(experience)
@@ -164,7 +148,7 @@ class VDNAgent:
             self.memory.append(experience)
     
     def train(self):
-        """VDN モデル学習ステップ"""
+        """VDN モデル学習ステップ (修正版)"""
         if len(self.memory) < self.batch_size:
             return 0
         
@@ -175,55 +159,71 @@ class VDNAgent:
         
         state_dicts, action_dicts, reward_dicts, next_state_dicts, done_dicts = zip(*batch)
         
-        # バッチ整形（各エージェントごとにテンソル化）
         agent_names = list(state_dicts[0].keys())
         
-        states_by_agent = {agent: [] for agent in agent_names}
-        actions_by_agent = {agent: [] for agent in agent_names}
-        rewards_by_agent = {agent: [] for agent in agent_names}
-        next_states_by_agent = {agent: [] for agent in agent_names}
-        dones_by_agent = {agent: [] for agent in agent_names}
-        
-        for state_dict, action_dict, reward_dict, next_state_dict, done_dict in zip(
-            state_dicts, action_dicts, reward_dicts, next_state_dicts, done_dicts):
-            for agent in agent_names:
-                states_by_agent[agent].append(state_dict[agent])
-                actions_by_agent[agent].append(action_dict[agent])
-                rewards_by_agent[agent].append(reward_dict[agent])
-                next_states_by_agent[agent].append(next_state_dict[agent])
-                dones_by_agent[agent].append(done_dict[agent])
-        
-        # テンソル化
+        # データをテンソル化して辞書にまとめる
+        states_by_agent = {}
+        actions_by_agent = {}
+        rewards_by_agent = {}
+        next_states_by_agent = {}
+        dones_by_agent = {}
+
         for agent in agent_names:
-            states_by_agent[agent] = torch.FloatTensor(np.array(states_by_agent[agent])).to(self.device)
-            actions_by_agent[agent] = torch.LongTensor(actions_by_agent[agent]).to(self.device)
-            rewards_by_agent[agent] = torch.FloatTensor(rewards_by_agent[agent]).to(self.device)
-            next_states_by_agent[agent] = torch.FloatTensor(np.array(next_states_by_agent[agent])).to(self.device)
-            dones_by_agent[agent] = torch.FloatTensor(dones_by_agent[agent]).to(self.device)
-        
-        # VDN による Q 値計算
+            states_by_agent[agent] = torch.FloatTensor(np.array([d[agent] for d in state_dicts])).to(self.device)
+            actions_by_agent[agent] = torch.LongTensor([d[agent] for d in action_dicts]).to(self.device)
+            rewards_by_agent[agent] = torch.FloatTensor([d[agent] for d in reward_dicts]).to(self.device)
+            next_states_by_agent[agent] = torch.FloatTensor(np.array([d[agent] for d in next_state_dicts])).to(self.device)
+            dones_by_agent[agent] = torch.FloatTensor([d[agent] for d in done_dicts]).to(self.device)
+
+        # ----------------------------------------------------
+        # 1. 現在の Q_tot の計算
+        # ----------------------------------------------------
         states_list = [states_by_agent[agent] for agent in agent_names]
+        q_locals = self.q_network(states_list)  # [Agent1_Q, Agent2_Q, ...]
+        
+        # 各エージェントが「実際に選んだ行動」のQ値を取り出す
+        q_selected_sum = torch.zeros(self.batch_size).to(self.device)
+        
+        for i, agent in enumerate(agent_names):
+            # gather: [Batch, ActionDim] -> [Batch, 1]
+            q_val = q_locals[i].gather(1, actions_by_agent[agent].unsqueeze(1)).squeeze()
+            q_selected_sum += q_val
+            
+        # ----------------------------------------------------
+        # 2. ターゲット Q_tot の計算
+        # ----------------------------------------------------
         next_states_list = [next_states_by_agent[agent] for agent in agent_names]
         
-        # 現在のQ値（全体）
-        q_tot, q_locals = self.q_network(states_list)
-        
-        # 各エージェントの Q 値選択
-        q_selected = torch.zeros(self.batch_size).to(self.device)
-        for i, agent in enumerate(agent_names):
-            q_selected += q_locals[i].gather(1, actions_by_agent[agent].unsqueeze(1)).squeeze()
-        
-        # ターゲットQ値計算
         with torch.no_grad():
-            q_tot_next, _ = self.target_network(next_states_list)
-            q_target = torch.zeros(self.batch_size).to(self.device)
+            q_locals_next = self.target_network(next_states_list)
             
-            for i, agent in enumerate(agent_names):
-                q_target += rewards_by_agent[agent]
-                q_target += (1 - dones_by_agent[agent]) * self.gamma * q_tot_next.max(1)[0]
-        
-        # 損失計算
-        loss = nn.SmoothL1Loss()(q_selected, q_target)
+            # VDNのターゲット: Σ(Max Q_i(s'))
+            # 各エージェントごとに最大のQ値を選んでから合計する
+            q_next_max_sum = torch.zeros(self.batch_size).to(self.device)
+            for i in range(self.num_agents):
+                q_next_max_sum += q_locals_next[i].max(1)[0]
+            
+            # 報酬の合計 (Global Reward)
+            total_rewards = torch.zeros(self.batch_size).to(self.device)
+            for agent in agent_names:
+                total_rewards += rewards_by_agent[agent]
+            
+            # 終了判定 (全エージェントが終了したら終了とみなす、または環境依存)
+            # ここでは「全員終わったらDone」として計算する論理積(AND)をとるか、
+            # 「誰か一人でも失敗したら」なら論理和(OR)をとります。
+            # 通常、Gymのようなステップ実行なら done は同時刻に発生するため、代表して agent_0 を見るか、論理積をとります。
+            # 安全のため「全員がFalseのときだけ継続」(= 1 - all_done) とします。
+            
+            # batch単位で、全員が done=True なら all_dones=1
+            all_dones = torch.stack(list(dones_by_agent.values())).min(dim=0)[0] 
+            
+            # Target = Σr + γ * (1 - all_done) * Σ(max Q_next)
+            q_target = total_rewards + (1 - all_dones) * self.gamma * q_next_max_sum
+
+        # ----------------------------------------------------
+        # 3. ロス計算と更新
+        # ----------------------------------------------------
+        loss = nn.SmoothL1Loss()(q_selected_sum, q_target)
         
         self.optimizer.zero_grad()
         loss.backward()
@@ -235,11 +235,10 @@ class VDNAgent:
             self.scheduler.step()
         
         return loss.item()
-    
+
+    # (update_target_network, decay_epsilon は変更なし)
     def update_target_network(self):
-        """ターゲットネットワーク更新"""
         self.target_network.load_state_dict(self.q_network.state_dict())
     
     def decay_epsilon(self):
-        """探索率低下"""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
