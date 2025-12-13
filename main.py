@@ -32,4 +32,4 @@ def main(use_vdn=False):
 
 if __name__ == "__main__":
     # VDN を使用する場合は True に設定
-    main(use_vdn=False)  # False: Independent DQN, True: VDN
+    main(use_vdn=True)  # False: Independent DQN, True: VDN

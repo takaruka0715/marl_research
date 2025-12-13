@@ -118,18 +118,24 @@ class Trainer:
         return self.agents, self.episode_rewards, self.avg_rewards, self.served_stats, current_env
     
     def _run_episode(self, env, stage):
-        """1エピソード実行"""
+        """1エピソード実行 (修正版)"""
         env.reset()
         episode_reward = {agent: 0 for agent in env.possible_agents}
+        
+        # 各エージェントの最新の観測を保持
         states = {agent: env.observe(agent) for agent in env.possible_agents}
         
-        # ランダムオーダー生成（empty ステージ）
+        # VDN用: サイクル（全エージェントの一巡）の開始時点の状態と行動を保持するバッファ
+        cycle_states = states.copy()
+        cycle_actions = {}
+        
+        # ランダムオーダー生成（empty ステージ用）
         if stage['layout'] == 'empty' and len(env.seats) > 0:
             if np.random.random() < 0.3:
                 order_pos = random.choice(env.seats)
                 if order_pos not in env.active_orders:
                     env.active_orders.append(order_pos)
-                    env.ready_dishes += 1
+                env.ready_dishes += 1
         
         for step in range(600):
             agent_name = env.agent_selection
@@ -139,37 +145,62 @@ class Trainer:
             
             state = states[agent_name]
             
+            # --- 行動選択 ---
             if self.use_vdn:
-                # VDN による行動選択
+                # VDN: 全エージェントの行動を一括取得（または辞書から取得）
                 actions_dict = self.agents['vdn'].select_actions(states)
                 action = actions_dict[agent_name]
             else:
-                # DQN による行動選択
+                # DQN: 個別に行動選択
                 action = self.agents[agent_name].select_action(state)
             
+            # 行動を一時保存（VDN用）
+            cycle_actions[agent_name] = action
+            
+            # 環境ステップ実行
             env.step(action)
             
             next_state = env.observe(agent_name)
             reward = env.rewards.get(agent_name, 0)
             done = env.truncations.get(agent_name, False)
             
+            # --- 経験の保存と学習 ---
             if self.use_vdn:
-                # VDN への経験保存（全エージェント分必要）
-                if agent_name == env.possible_agents[-1]:  # 最後のエージェント時に保存
-                    state_dict = states.copy()
-                    action_dict = {a: env.rewards.get(a, 0) for a in env.possible_agents}
+                # 最後のエージェントの行動が終わったら、1サイクル分のデータを保存
+                # (注: agent_1 が最後と仮定。エージェント順序が固定の場合のみ有効)
+                if agent_name == env.possible_agents[-1]:
+                    
+                    # 次の状態の辞書を作成（現在の更新分も含める）
+                    current_next_states = states.copy()
+                    current_next_states[agent_name] = next_state
+                    
+                    # 以前のコードではここで action_dict に rewards を入れてしまうバグがありました
+                    # 修正: 正しく集めた cycle_actions を使用
+                    action_dict = cycle_actions.copy()
+                    
                     reward_dict = {a: env.rewards.get(a, 0) for a in env.possible_agents}
-                    next_state_dict = {a: env.observe(a) if not env.truncations.get(a) else next_state 
-                                      for a in env.possible_agents}
                     done_dict = {a: env.truncations.get(a, False) for a in env.possible_agents}
-                    self.agents['vdn'].store_transition(state_dict, action_dict, reward_dict, 
-                                                       next_state_dict, done_dict)
+                    
+                    # サイクル開始時の状態(cycle_states) -> 行動(action_dict) -> 次の状態(current_next_states)
+                    self.agents['vdn'].store_transition(
+                        cycle_states, 
+                        action_dict, 
+                        reward_dict, 
+                        current_next_states, 
+                        done_dict
+                    )
                     self.agents['vdn'].train()
+                    
+                    # 次のサイクルのためにバッファをリセット・更新
+                    cycle_actions = {}
+                    cycle_states = current_next_states.copy()
+
             else:
-                # DQN への経験保存
+                # Independent DQN の場合はそのまま保存
                 self.agents[agent_name].store_transition(state, action, reward, next_state, done)
                 self.agents[agent_name].train()
             
+            # 状態更新
             states[agent_name] = next_state
             episode_reward[agent_name] += reward
             
