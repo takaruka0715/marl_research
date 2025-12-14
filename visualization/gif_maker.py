@@ -71,9 +71,30 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_cooking.gif'
             continue
         
         state = env.observe(agent_name)
+
         with torch.no_grad():
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(agents[agent_name].device)
-            action = agents[agent_name].q_network(state_tensor).argmax().item()
+            # VDNモードかどうかで分岐
+            if 'vdn' in agents:
+                # VDNの場合は、1つのエージェントインスタンスを共有して使う
+                vdn_agent = agents['vdn']
+                device = vdn_agent.device
+                
+                # エージェント名 (agent_0) からインデックス (0) を取得
+                agent_idx = int(agent_name.split('_')[1])
+                
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+                
+                # VDNAgentが持つ「個別のローカルQネットワーク」を使って行動決定
+                # agents/vdn.py で定義された local_q_networks リストにアクセス
+                q_values = vdn_agent.q_network.local_q_networks[agent_idx](state_tensor)
+                action = q_values.argmax().item()
+                
+            else:
+                # 独立DQN (Independent DQN) の場合
+                current_agent = agents[agent_name]
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(current_agent.device)
+                action = current_agent.q_network(state_tensor).argmax().item()
+
         env.step(action)
         
         if all(env.truncations.get(a, False) for a in env.possible_agents):
