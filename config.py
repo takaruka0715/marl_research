@@ -3,11 +3,13 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     """環境とエージェント共通設定"""
+    # TAR2の効果を確認するため、スパース報酬設定に変更（途中報酬を0にする）
     delivery_reward: float = 100.0
-    pickup_reward: float = 50.0
-    collision_penalty: float = -10.0
-    step_cost: float = -0.1
-    wait_penalty: float = -0.5
+    pickup_reward: float = 50.0       # 元に戻す
+    collision_penalty: float = -10.0  # 元に戻す
+    step_cost: float = -0.1           # 元に戻す
+    wait_penalty: float = -0.5        # 元に戻す
+    
     coop_bonus_threshold: float = 20.0
     max_steps: int = 500
     grid_size: int = 15
@@ -25,6 +27,7 @@ class AgentConfig:
     batch_size: int = 128
     buffer_capacity: int = 50000
     use_vdn: bool = False  # VDN を使用するか
+    use_tar2: bool = False # TAR2 (報酬再分配) を使用するか <--- 追加
 
 @dataclass
 class TrainingConfig:
