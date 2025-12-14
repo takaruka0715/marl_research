@@ -7,7 +7,7 @@ from agents.tar2 import TAR2Network, collate_trajectories
 from .curriculum import Curriculum
 
 class Trainer:
-    """マルチエージェント学習トレーナー（DQN/VDN + TAR2 対応）"""
+    """マルチエージェント学習トレーナー（DQN/VDN + TAR2 + 適応型カリキュラム 対応）"""
     
     # 修正: use_tar2 を引数に追加
     def __init__(self, num_episodes=30000, use_shared_replay=True, use_vdn=False, use_tar2=False, config=None):
@@ -16,20 +16,37 @@ class Trainer:
         self.use_vdn = use_vdn
         self.use_tar2 = use_tar2  # 修正: 引数から直接設定
         self.config = config
+        
+        # 適応型カリキュラムを使用
         self.curriculum = Curriculum()
         
         self.agents = {}
         self.episode_rewards = {}
         self.avg_rewards = {}
         self.served_stats = {}
+
+        # TAR2用バッファ (追加)
+        self.tar2 = None
+        self.tar2_buffer = []
     
     def train(self):
         """学習ループ実行"""
         action_dim = 4
         
-        # 環境初期化 (状態次元取得用)
-        temp_env = RestaurantEnv(layout_type='empty', local_obs_size=5, config=self.config)
-        state_dim = temp_env.observation_space('agent_0').shape[0]
+        # --- 初期環境設定（状態次元取得用） ---
+        # [cite_start]適応型カリキュラムから初期ステージを取得 [cite: 68]
+        current_stage = self.curriculum.get_current_stage()
+        
+        # 環境初期化
+        current_env = RestaurantEnv(
+            layout_type=current_stage['layout'],
+            enable_customers=current_stage['customers'],
+            customer_spawn_interval=current_stage['spawn_interval'],
+            local_obs_size=5,
+            config=self.config
+        )
+
+        state_dim = current_env.observation_space('agent_0').shape[0]
         print(f"State Dimension: {state_dim}")
         print(f"System: {'VDN' if self.use_vdn else 'Independent DQN'} | TAR2: {'ON' if self.use_tar2 else 'OFF'}")
         
@@ -48,47 +65,74 @@ class Trainer:
         else:
             self.agents = {
                 agent_name: DQNAgent(state_dim, action_dim, shared_buffer=shared_buffer) 
-                for agent_name in temp_env.possible_agents
+                for agent_name in current_env.possible_agents
             }
         
-        self.episode_rewards = {agent: [] for agent in temp_env.possible_agents}
-        self.avg_rewards = {agent: [] for agent in temp_env.possible_agents}
-        self.served_stats = {agent: [] for agent in temp_env.possible_agents}
+        self.episode_rewards = {agent: [] for agent in current_env.possible_agents}
+        self.avg_rewards = {agent: [] for agent in current_env.possible_agents}
+        self.served_stats = {agent: [] for agent in current_env.possible_agents}
         
-        current_env = None
-        current_stage = None
+        # ステージ滞在カウンター
+        stage_episode_count = 0
+        
+        print(f"\n{'='*70}")
+        print(f"=== STARTING STAGE: {current_stage['description']} ===")
+        print(f"{'='*70}")
         
         for episode in range(self.num_episodes):
-            stage = self.curriculum.get_stage(episode)
             
-            if stage != current_stage:
-                prev_desc = current_stage['description'] if current_stage else "None"
-                current_stage = stage
+            # ----------------------------------------------------
+            # 0. 適応型カリキュラムの進行判定 (閾値/タイムアウト)
+            # ----------------------------------------------------
+            # agent_0 の平均報酬を代表値として使用
+            current_performance = 0
+            if len(self.avg_rewards['agent_0']) > 0:
+                current_performance = self.avg_rewards['agent_0'][-1]
+
+            should_proceed, reason = self.curriculum.check_progression(
+                current_performance, 
+                stage_episode_count
+            )
+
+            if should_proceed:
+                # 次のステージへ進む
+                new_stage = self.curriculum.get_current_stage()
+                
                 print(f"\n{'='*70}")
-                print(f"=== Curriculum: {prev_desc} -> {stage['description']} ===")
-                print(f"=== Episode {episode} / {self.num_episodes} ===")
+                print(f"🔄 CURRICULUM PROGRESSION")
+                print(f"   From: {current_stage['description']}")
+                print(f"   To:   {new_stage['description']}")
+                print(f"   Why:  {reason}")
+                print(f"   Perf: {current_performance:.1f} (Target: {current_stage['threshold']})")
                 print(f"{'='*70}")
                 
+                # [cite_start]新しいステージ設定で環境を再構築 [cite: 79]
+                current_stage = new_stage
                 current_env = RestaurantEnv(
-                    layout_type=stage['layout'],
-                    enable_customers=stage['customers'],
-                    customer_spawn_interval=stage['spawn_interval'],
+                    layout_type=current_stage['layout'],
+                    enable_customers=current_stage['customers'],
+                    customer_spawn_interval=current_stage['spawn_interval'],
                     local_obs_size=5,
                     coop_factor=0.5,
                     config=self.config
                 )
                 
-                if episode > 0:
-                    if self.use_vdn:
-                        self.agents['vdn'].epsilon = 0.6
-                    else:
-                        for agent_name in self.agents:
-                            self.agents[agent_name].epsilon = 0.6
+                # 滞在カウンターリセット
+                stage_episode_count = 0
+                
+                # 探索率(epsilon)のリセット（環境が変わったので再探索させる）
+                reset_epsilon = 0.6
+                if self.use_vdn:
+                    self.agents['vdn'].epsilon = max(self.agents['vdn'].epsilon, reset_epsilon)
+                else:
+                    for agent_name in self.agents:
+                        self.agents[agent_name].epsilon = max(self.agents[agent_name].epsilon, reset_epsilon)
 
             # ----------------------------------------------------
             # 1. データ収集フェーズ (学習なしで走らせる)
             # ----------------------------------------------------
-            trajectory_data = self._run_episode_collect_only(current_env, stage)
+            trajectory_data = self._run_episode_collect_only(current_env)
+            stage_episode_count += 1
             
             # 報酬記録
             total_r = trajectory_data['total_reward']
@@ -132,7 +176,7 @@ class Trainer:
                 for agent_name in current_env.possible_agents:
                     self.agents[agent_name].decay_epsilon()
             
-            # 定期更新
+            # [cite_start]定期更新 [cite: 90]
             if episode % 10 == 0:
                 if self.use_vdn:
                     self.agents['vdn'].update_target_network()
@@ -145,12 +189,12 @@ class Trainer:
                 avg_0 = self.avg_rewards['agent_0'][-1]
                 served_0 = np.mean(self.served_stats['agent_0'][-50:])
                 eps = self.agents['vdn'].epsilon if self.use_vdn else self.agents['agent_0'].epsilon
-                tar2_msg = f" | TAR2 Shaped" if self.use_tar2 else ""
-                print(f"Ep {episode:4d} | AvgReward: {avg_0:6.1f} | Served: {served_0:.1f} | ε={eps:.3f}{tar2_msg}")
+                tar2_msg = " | TAR2 Shaped" if self.use_tar2 else ""
+                print(f"Ep {episode:4d} | StgEp: {stage_episode_count:4d} | AvgReward: {avg_0:6.1f} | Served: {served_0:.1f} | ε={eps:.3f}{tar2_msg}")
         
         return self.agents, self.episode_rewards, self.avg_rewards, self.served_stats, current_env
 
-    def _run_episode_collect_only(self, env, stage):
+    def _run_episode_collect_only(self, env):
         """学習を行わず、全ステップのデータを収集して返す"""
         env.reset()
         
@@ -161,12 +205,7 @@ class Trainer:
         
         states = {agent: env.observe(agent) for agent in env.possible_agents}
         
-        if stage['layout'] == 'empty' and len(env.seats) > 0:
-            if np.random.random() < 0.3:
-                order_pos = random.choice(env.seats)
-                if order_pos not in env.active_orders:
-                    env.active_orders.append(order_pos)
-                env.ready_dishes += 1
+        # 修正: カリキュラム変更に伴い、ランダム注文生成ロジックは削除しました
         
         episode_reward_sum = 0
         agents_order = env.possible_agents 
@@ -250,10 +289,12 @@ class Trainer:
             
             if self.use_vdn:
                 self.agents['vdn'].store_transition(s_dict, a_dict, r_dict, ns_dict, d_dict)
+                # ご要望通り、毎ステップ学習を行う元の仕様を維持しています
                 self.agents['vdn'].train()
             else:
                 for i, name in enumerate(agents_order):
                     self.agents[name].store_transition(
                         s_dict[name], a_dict[name], r_dict[name], ns_dict[name], d_dict[name]
                     )
+                    # ご要望通り、毎ステップ学習を行う元の仕様を維持しています
                     self.agents[name].train()
