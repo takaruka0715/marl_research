@@ -7,8 +7,8 @@ class Config:
     delivery_reward: float = 100.0
     pickup_reward: float = 50.0       # 元に戻す
     collision_penalty: float = -10.0  # 元に戻す
-    step_cost: float = -0.1           # 元に戻す
-    wait_penalty: float = -0.5        # 元に戻す
+    step_cost: float = -0.01           # 元に戻す
+    wait_penalty: float = 0.0        # 元に戻す
     
     coop_bonus_threshold: float = 20.0
     max_steps: int = 500

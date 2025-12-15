@@ -70,4 +70,4 @@ def main(use_vdn=False, use_tar2=False):
 
 if __name__ == "__main__":
     # 実験設定: 必要に応じてTrue/Falseを切り替えてください
-    main(use_vdn=True, use_tar2=False)
+    main(use_vdn=True, use_tar2=True)

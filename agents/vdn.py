@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from .network import DuelingDQN
 
 class VDNNetwork(nn.Module):
     """
@@ -19,7 +20,9 @@ class VDNNetwork(nn.Module):
         ])
     
     def _build_q_network(self, input_dim, output_dim):
+        return DuelingDQN(input_dim, output_dim)
         """ローカルQ値ネットワークの構築"""
+        """
         return nn.Sequential(
             nn.Linear(input_dim, 256),
             nn.ReLU(),
@@ -28,6 +31,7 @@ class VDNNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(128, output_dim)
         )
+        """
     
     def forward(self, states):
         """
