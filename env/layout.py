@@ -1,3 +1,5 @@
+# env/layout.py
+
 class LayoutBuilder:
     """レストランレイアウト生成"""
     
@@ -10,35 +12,42 @@ class LayoutBuilder:
         obstacles = []
         tables = []
         seats = []
-        counter_pos = None
-        entrance_pos = None
+        
+        # 【修正点：カウンター位置の固定】
+        # 全レイアウトにおいて共通の位置（左上の角付近）に配置します
+        counter_pos = (1, 1)
+        obstacles.append(counter_pos)
+        
+        # お客さんの入り口（共通）
+        entrance_pos = (1, grid_size // 2)
         
         if layout_type == 'empty':
-            counter_pos = (grid_size // 2, grid_size // 2)
-            obstacles.append(counter_pos)
+            # Stage 1: 中央にテーブルを1つ配置
+            LayoutBuilder._add_table(obstacles, tables, seats, 7, 7, grid_size)
         
         elif layout_type == 'basic':
+            # 外周の壁
             obstacles = LayoutBuilder._add_walls(obstacles, grid_size)
-            counter_pos = (7, 1)
-            LayoutBuilder._add_counter(obstacles, 7, 1, length=3, horizontal=False)
             
-            for tx, ty in [(3, 3), (3, 8), (8, 3), (8, 8), (6, 11)]:
+            # 【修正点：通路の確保】
+            # 椅子を障害物にするため、壁から離して配置し、ロボットが通れる隙間を作ります
+            table_positions = [(4, 4), (4, 10), (10, 4), (10, 10)]
+            for tx, ty in table_positions:
                 LayoutBuilder._add_table(obstacles, tables, seats, tx, ty, grid_size)
-            entrance_pos = (1, 7)
         
         elif layout_type == 'complex':
+            # 外周の壁
             obstacles = LayoutBuilder._add_walls(obstacles, grid_size)
-            counter_pos = (7, 1)
-            LayoutBuilder._add_counter(obstacles, 7, 1, length=5, horizontal=False)
             
-            for i in range(3):
-                obstacles.append((12, 5 + i))
+            # 中央の仕切り壁（通り抜け用の隙間を空ける）
+            for i in range(2, 13):
+                if i not in [7, 8]: # 中央に通路を確保
+                    obstacles.append((i, 7))
             
-            for tx in [2, 6, 10]:
-                for ty in [2, 6, 10]:
-                    LayoutBuilder._add_table(obstacles, tables, seats, tx, ty, grid_size)
-            LayoutBuilder._add_table(obstacles, tables, seats, 4, 12, grid_size)
-            entrance_pos = (1, 7)
+            # テーブル配置（椅子を含めても通路が残るように調整）
+            table_positions = [(3, 3), (3, 11), (11, 3), (11, 11), (7, 3), (7, 11)]
+            for tx, ty in table_positions:
+                LayoutBuilder._add_table(obstacles, tables, seats, tx, ty, grid_size)
         
         return obstacles, tables, seats, counter_pos, entrance_pos
     
@@ -52,23 +61,30 @@ class LayoutBuilder:
         return obstacles
     
     @staticmethod
-    def _add_counter(obstacles, x, y, length=3, horizontal=True):
-        for i in range(length):
-            if horizontal:
-                obstacles.append((x, y + i))
-            else:
-                obstacles.append((x + i, y))
-    
-    @staticmethod
     def _add_table(obstacles, tables, seats, x, y, grid_size):
-        if x < grid_size - 1 and y < grid_size - 1:
-            tables.append((x, y))
-            for dx in [0, 1]:
-                for dy in [0, 1]:
+        """
+        テーブル(2x2)と、その上下左右に椅子を配置
+        """
+        # テーブル本体(2x2)を障害物として追加
+        tables.append((x, y))
+        for dx in [0, 1]:
+            for dy in [0, 1]:
+                if (x + dx, y + dy) not in obstacles:
                     obstacles.append((x + dx, y + dy))
-            
-            seat_positions = [(x - 1, y), (x + 2, y), (x, y - 1), (x, y + 2)]
-            for sx, sy in seat_positions:
-                if (0 < sx < grid_size - 1 and 0 < sy < grid_size - 1 and
-                    (sx, sy) not in obstacles):
+        
+        # 【修正点：上下左右に椅子を配置し、障害物として登録】
+        # 椅子（座席）の相対座標
+        seat_candidates = [
+            (x - 1, y), (x - 1, y + 1), # 上側
+            (x + 2, y), (x + 2, y + 1), # 下側
+            (x, y - 1), (x + 1, y - 1), # 左側
+            (x, y + 2), (x + 1, y + 2)  # 右側
+        ]
+        
+        for sx, sy in seat_candidates:
+            # グリッド内に収まり、かつ既存の壁・テーブルと重ならない場合のみ配置
+            if 0 < sx < grid_size - 1 and 0 < sy < grid_size - 1:
+                if (sx, sy) not in obstacles:
                     seats.append((sx, sy))
+                    # 【重要】椅子を障害物リストに追加することでロボットが進入不可になる
+                    obstacles.append((sx, sy))
