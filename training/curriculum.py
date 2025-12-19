@@ -9,21 +9,21 @@ class Curriculum:
             {
                 'layout': 'empty', 'customers': True, 'spawn_interval': 60,
                 'description': 'Stage 1: Basic Mechanics',
-                'threshold': 10.0,       # クリア目標
+                'threshold': 100.0,       # クリア目標
                 'timeout_episodes': 2000 # ★制限時間（これを超えたら強制進行）
             },
             # Stage 2: Navigation
             {
                 'layout': 'basic', 'customers': True, 'spawn_interval': 40,
                 'description': 'Stage 2: Obstacle Navigation',
-                'threshold': 20.0,
+                'threshold': 400.0,
                 'timeout_episodes': 3000 # 3000エピソード猶予を与える
             },
             # Stage 3: Complex
             {
                 'layout': 'complex', 'customers': True, 'spawn_interval': 40,
                 'description': 'Stage 3: Complex Environment',
-                'threshold': 30.0,
+                'threshold': 800.0,
                 'timeout_episodes': 4000
             },
             # Stage 4: High Load (Final)
