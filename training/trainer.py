@@ -1,300 +1,178 @@
 import numpy as np
 import torch
-import random
+import csv
+import os
 from env import RestaurantEnv
 from agents import DQNAgent, VDNAgent, SharedReplayBuffer
-from agents.tar2 import TAR2Network, collate_trajectories
 from .curriculum import Curriculum
 
 class Trainer:
-    """マルチエージェント学習トレーナー（DQN/VDN + TAR2 + 適応型カリキュラム 対応）"""
-    
-    # 修正: use_tar2 を引数に追加
-    def __init__(self, num_episodes=30000, use_shared_replay=True, use_vdn=False, use_tar2=False, config=None):
+    def __init__(self, num_episodes=15000, use_shared_replay=True, use_vdn=False, use_tar2=False, config=None):
         self.num_episodes = num_episodes
         self.use_shared_replay = use_shared_replay
         self.use_vdn = use_vdn
-        self.use_tar2 = use_tar2  # 修正: 引数から直接設定
+        self.use_tar2 = False 
         self.config = config
-        
-        # 適応型カリキュラムを使用
         self.curriculum = Curriculum()
         
         self.agents = {}
-        self.episode_rewards = {}
-        self.avg_rewards = {}
-        self.served_stats = {}
+        self.episode_rewards = {'agent_0': [], 'agent_1': []}
+        self.avg_rewards = {'agent_0': [], 'agent_1': []}
+        self.served_stats = {'agent_0': [], 'agent_1': []}
+        self.total_served_history = [] 
+        self.stats_log = []
+        self.stage_transitions = [] 
 
-        # TAR2用バッファ (追加)
-        self.tar2 = None
-        self.tar2_buffer = []
-    
     def train(self):
-        """学習ループ実行"""
-        action_dim = 4
-        
-        # --- 初期環境設定（状態次元取得用） ---
-        # [cite_start]適応型カリキュラムから初期ステージを取得 [cite: 68]
         current_stage = self.curriculum.get_current_stage()
+        self.stage_transitions.append((0, current_stage['description']))
         
-        # 環境初期化
         current_env = RestaurantEnv(
             layout_type=current_stage['layout'],
             enable_customers=current_stage['customers'],
             customer_spawn_interval=current_stage['spawn_interval'],
-            local_obs_size=5,
             config=self.config
         )
 
         state_dim = current_env.observation_space('agent_0').shape[0]
-        print(f"State Dimension: {state_dim}")
-        print(f"System: {'VDN' if self.use_vdn else 'Independent DQN'} | TAR2: {'ON' if self.use_tar2 else 'OFF'}")
-        
-        # TAR2 初期化
-        if self.use_tar2:
-            self.tar2 = TAR2Network(state_dim, action_dim, num_agents=2)
-            self.tar2_buffer = []
-
-        # バッファ・エージェント初期化
+        action_dim = 4
         shared_buffer = SharedReplayBuffer(capacity=50000) if self.use_shared_replay else None
         
         if self.use_vdn:
-            self.agents = {
-                'vdn': VDNAgent(state_dim, action_dim, num_agents=2, shared_buffer=shared_buffer)
-            }
+            self.agents = {'vdn': VDNAgent(state_dim, action_dim, num_agents=2, shared_buffer=shared_buffer)}
         else:
-            self.agents = {
-                agent_name: DQNAgent(state_dim, action_dim, shared_buffer=shared_buffer) 
-                for agent_name in current_env.possible_agents
-            }
+            self.agents = {a: DQNAgent(state_dim, action_dim, shared_buffer=shared_buffer) for a in current_env.possible_agents}
         
-        self.episode_rewards = {agent: [] for agent in current_env.possible_agents}
-        self.avg_rewards = {agent: [] for agent in current_env.possible_agents}
-        self.served_stats = {agent: [] for agent in current_env.possible_agents}
-        
-        # ステージ滞在カウンター
-        stage_episode_count = 0
-        
-        print(f"\n{'='*70}")
-        print(f"=== STARTING STAGE: {current_stage['description']} ===")
-        print(f"{'='*70}")
-        
-        for episode in range(self.num_episodes):
-            
-            # ----------------------------------------------------
-            # 0. 適応型カリキュラムの進行判定 (閾値/タイムアウト)
-            # ----------------------------------------------------
-            # agent_0 の平均報酬を代表値として使用
-            current_performance = 0
-            if len(self.avg_rewards['agent_0']) > 0:
-                current_performance = self.avg_rewards['agent_0'][-1]
+        stage_ep_count = 0
 
-            should_proceed, reason = self.curriculum.check_progression(
-                current_performance, 
-                stage_episode_count
-            )
+        for episode in range(self.num_episodes):
+            avg_served = np.mean(self.total_served_history[-50:]) if self.total_served_history else 0
+            should_proceed, reason = self.curriculum.check_progression(avg_served, stage_ep_count)
 
             if should_proceed:
-                # 次のステージへ進む
-                new_stage = self.curriculum.get_current_stage()
+                current_stage = self.curriculum.get_current_stage()
+                self.stage_transitions.append((episode, current_stage['description']))
+                current_env = RestaurantEnv(layout_type=current_stage['layout'], config=self.config)
+                stage_ep_count = 0
                 
-                print(f"\n{'='*70}")
-                print(f"🔄 CURRICULUM PROGRESSION")
-                print(f"   From: {current_stage['description']}")
-                print(f"   To:   {new_stage['description']}")
-                print(f"   Why:  {reason}")
-                print(f"   Perf: {current_performance:.1f} (Target: {current_stage['threshold']})")
-                print(f"{'='*70}")
-                
-                # [cite_start]新しいステージ設定で環境を再構築 [cite: 79]
-                current_stage = new_stage
-                current_env = RestaurantEnv(
-                    layout_type=current_stage['layout'],
-                    enable_customers=current_stage['customers'],
-                    customer_spawn_interval=current_stage['spawn_interval'],
-                    local_obs_size=5,
-                    coop_factor=0.5,
-                    config=self.config
-                )
-                
-                # 滞在カウンターリセット
-                stage_episode_count = 0
-                
-                # 探索率(epsilon)のリセット（環境が変わったので再探索させる）
-                reset_epsilon = 0.6
-                if self.use_vdn:
-                    self.agents['vdn'].epsilon = max(self.agents['vdn'].epsilon, reset_epsilon)
+                # εリセット
+                reset_eps = 0.5 
+                if self.use_vdn: self.agents['vdn'].epsilon = max(self.agents['vdn'].epsilon, reset_eps)
                 else:
-                    for agent_name in self.agents:
-                        self.agents[agent_name].epsilon = max(self.agents[agent_name].epsilon, reset_epsilon)
+                    for a in self.agents.values(): a.epsilon = max(a.epsilon, reset_eps)
+                print(f"\n>>> STAGE MOVED: {current_stage['description']} | ε reset to {reset_eps}")
 
-            # ----------------------------------------------------
-            # 1. データ収集フェーズ (学習なしで走らせる)
-            # ----------------------------------------------------
-            trajectory_data = self._run_episode_collect_only(current_env)
-            stage_episode_count += 1
+            traj = self._run_episode_collect_only(current_env)
+            stage_ep_count += 1
             
-            # 報酬記録
-            total_r = trajectory_data['total_reward']
-            for agent_name in current_env.possible_agents:
-                self.episode_rewards[agent_name].append(total_r / 2)
-                self.avg_rewards[agent_name].append(np.mean(self.episode_rewards[agent_name][-50:]))
-                self.served_stats[agent_name].append(current_env.served_count[agent_name])
-
-            # ----------------------------------------------------
-            # 2. TAR2 報酬再計算フェーズ
-            # ----------------------------------------------------
-            shaped_rewards = None
-            if self.use_tar2:
-                # バッファに追加
-                self.tar2_buffer.append(trajectory_data)
-                
-                # TAR2モデルの学習 (バッチが溜まったら)
-                if len(self.tar2_buffer) >= 32:
-                    b_states, b_actions, b_rewards, _ = collate_trajectories(self.tar2_buffer, self.tar2.device)
-                    tar2_loss = self.tar2.update(b_states, b_actions, b_rewards)
-                    self.tar2_buffer = []
-
-                # 現在のエピソードの報酬を再分配 (推論)
-                s, a, r_tot, _ = collate_trajectories([trajectory_data], self.tar2.device)
-                f_s = s[:, -1, :, :]
-                
-                with torch.no_grad():
-                    scores, _ = self.tar2(s, a, f_s)
-                    shaped_tensor = self.tar2.get_redistributed_rewards(scores, r_tot)
-                    shaped_rewards = shaped_tensor.squeeze(0).cpu().numpy() # (T, N)
+            served_total = sum(current_env.served_count.values()) if isinstance(current_env.served_count, dict) else current_env.served_count
+            self.total_served_history.append(served_total)
             
-            # ----------------------------------------------------
-            # 3. エージェント学習フェーズ (再計算された報酬を使用)
-            # ----------------------------------------------------
-            self._store_and_train_agents(trajectory_data, shaped_rewards)
+            coll = sum(current_env.collision_count.values()) if isinstance(getattr(current_env, 'collision_count', 0), dict) else getattr(current_env, 'collision_count', 0)
+            wait = np.mean(list(current_env.get_average_wait_time().values())) if hasattr(current_env, 'get_average_wait_time') else 0
 
-            # Epsilon減衰
-            if self.use_vdn:
-                self.agents['vdn'].decay_epsilon()
-            else:
-                for agent_name in current_env.possible_agents:
-                    self.agents[agent_name].decay_epsilon()
+            for a in current_env.possible_agents:
+                self.episode_rewards[a].append(traj['total_reward'] / 2)
+                self.avg_rewards[a].append(np.mean(self.episode_rewards[a][-50:]))
+                self.served_stats[a].append(current_env.served_count[a] if isinstance(current_env.served_count, dict) else 0)
+
+            self.stats_log.append({
+                'episode': int(episode), 'served_count': float(served_total),
+                'cancelled_count': float(traj.get('cancelled_count', 0)),
+                'success_rate': float(served_total / (served_total + traj.get('cancelled_count', 0) + 1e-6)),
+                'avg_wait_time': float(wait), 'collisions': float(coll)
+            })
+
+            self._store_and_train_agents(traj)
+            if self.use_vdn: self.agents['vdn'].decay_epsilon()
+            else: [self.agents[a].decay_epsilon() for a in current_env.possible_agents]
             
-            # [cite_start]定期更新 [cite: 90]
             if episode % 10 == 0:
-                if self.use_vdn:
-                    self.agents['vdn'].update_target_network()
-                else:
-                    for agent_name in current_env.possible_agents:
-                        self.agents[agent_name].update_target_network()
+                for a in self.agents.values(): a.update_target_network()
             
-            # ログ表示
+            # --- 表示形式を以前のスタイルに戻す ---
             if episode % 100 == 0:
-                avg_0 = self.avg_rewards['agent_0'][-1]
-                served_0 = np.mean(self.served_stats['agent_0'][-50:])
+                avg_r = self.avg_rewards['agent_0'][-1]
                 eps = self.agents['vdn'].epsilon if self.use_vdn else self.agents['agent_0'].epsilon
-                tar2_msg = " | TAR2 Shaped" if self.use_tar2 else ""
-                print(f"Ep {episode:4d} | StgEp: {stage_episode_count:4d} | AvgReward: {avg_0:6.1f} | Served: {served_0:.1f} | ε={eps:.3f}{tar2_msg}")
-        
-        return self.agents, self.episode_rewards, self.avg_rewards, self.served_stats, current_env
+                cancel = traj.get('cancelled_count', 0)
+                # 1行に全ての重要指標を並べる
+                print(f"Ep {episode:4d} | StgEp: {stage_ep_count:4d} | AvgReward: {avg_r:6.1f} | "
+                      f"Served: {avg_served:4.1f} | Cancel: {cancel:d} | ε={eps:.3f}")
+
+        self._save_stats_to_csv()
+        return self.agents, self.episode_rewards, self.avg_rewards, self.served_stats, self.stats_log, self.stage_transitions, current_env
 
     def _run_episode_collect_only(self, env):
-        """学習を行わず、全ステップのデータを収集して返す"""
         env.reset()
-        
-        states_seq = []
-        actions_seq = []
-        rewards_seq = []
-        dones_seq = []
-        
-        states = {agent: env.observe(agent) for agent in env.possible_agents}
-        
-        # 修正: カリキュラム変更に伴い、ランダム注文生成ロジックは削除しました
-        
-        episode_reward_sum = 0
-        agents_order = env.possible_agents 
-        
-        for step in range(600):
-            step_states = []
-            step_actions = []
-            step_rewards = []
-            step_dones = []
+        states_seq, actions_seq, rewards_seq, dones_seq = [], [], [], []
+        states = {a: env.observe(a) for a in env.possible_agents}
+        reward_sum, cancelled = 0, 0
+        prev_positions = {a: None for a in env.possible_agents}
+
+        for step in range(self.config.max_steps):
+            actions = {}
+            if self.use_vdn: actions = self.agents['vdn'].select_actions(states)
+            else: [actions.update({a: self.agents[a].select_action(states[a])}) for a in env.possible_agents]
             
-            current_actions = {}
-            for agent_name in agents_order:
-                state = states[agent_name]
-                step_states.append(state)
-                
-                if env.truncations.get(agent_name, False):
-                    action = 0
-                else:
-                    if self.use_vdn:
-                        actions_dict = self.agents['vdn'].select_actions(states)
-                        action = actions_dict[agent_name]
-                    else:
-                        action = self.agents[agent_name].select_action(state)
-                
-                current_actions[agent_name] = action
-                step_actions.append(action)
+            for a in env.possible_agents:
+                # サボり防止
+                if states[a][2] > 0: env.rewards[a] += self.config.holding_item_step_cost
+                curr_pos = env.get_agent_pos(a) if hasattr(env, 'get_agent_pos') else None
+                if curr_pos == prev_positions[a]: env.rewards[a] += self.config.idle_penalty
+                prev_positions[a] = curr_pos
 
-            for agent_name in agents_order:
-                if env.agent_selection == agent_name:
-                    env.step(current_actions[agent_name])
+                if env.agent_selection == a: env.step(actions[a])
             
-            for agent_name in agents_order:
-                next_obs = env.observe(agent_name)
-                states[agent_name] = next_obs
-                
-                r = env.rewards.get(agent_name, 0)
-                d = env.truncations.get(agent_name, False)
-                
-                step_rewards.append(r)
-                step_dones.append(d)
-                
-                episode_reward_sum += r
+            if hasattr(env, 'check_and_handle_timeouts'):
+                timeout_num = env.check_and_handle_timeouts()
+                if timeout_num > 0:
+                    cancelled += timeout_num
+                    for a in env.possible_agents: env.rewards[a] += self.config.penalty_customer_left
 
-            states_seq.append(np.array(step_states))
-            actions_seq.append(np.array(step_actions))
-            rewards_seq.append(np.array(step_rewards))
-            dones_seq.append(np.array(step_dones))
+            step_s, step_a, step_r, step_d = [], [], [], []
+            for a in env.possible_agents:
+                step_s.append(env.observe(a))
+                step_a.append(actions[a])
+                r = env.rewards.get(a, 0)
+                step_r.append(r)
+                step_d.append(env.truncations.get(a, False))
+                reward_sum += r
+            
+            states_seq.append(np.array(step_s))
+            actions_seq.append(np.array(step_a))
+            rewards_seq.append(np.array(step_r))
+            dones_seq.append(np.array(step_d))
 
-            if all(env.truncations.values()):
-                break
+            if all(env.truncations.values()): break
+            states = {a: env.observe(a) for a in env.possible_agents}
         
-        return {
-            'states': np.array(states_seq),
-            'actions': np.array(actions_seq),
-            'rewards': np.array(rewards_seq),
-            'dones': np.array(dones_seq),
-            'total_reward': episode_reward_sum
-        }
+        return {'states': np.array(states_seq), 'actions': np.array(actions_seq), 'rewards': np.array(rewards_seq), 
+                'dones': np.array(dones_seq), 'total_reward': reward_sum, 'cancelled_count': cancelled}
 
-    def _store_and_train_agents(self, trajectory, shaped_rewards):
-        """収集したデータと報酬を使ってバッファ保存と学習を行う"""
-        T = len(trajectory['states'])
-        agents_order = ['agent_0', 'agent_1']
-        
+    def _store_and_train_agents(self, traj):
+        T = len(traj['states'])
         for t in range(T - 1):
-            s_t = trajectory['states'][t]
-            a_t = trajectory['actions'][t]
-            ns_t = trajectory['states'][t+1]
-            d_t = trajectory['dones'][t]
-            
-            if shaped_rewards is not None:
-                r_t = shaped_rewards[t]
-            else:
-                r_t = trajectory['rewards'][t]
-
-            s_dict = {name: s_t[i] for i, name in enumerate(agents_order)}
-            a_dict = {name: a_t[i] for i, name in enumerate(agents_order)}
-            r_dict = {name: r_t[i] for i, name in enumerate(agents_order)}
-            ns_dict = {name: ns_t[i] for i, name in enumerate(agents_order)}
-            d_dict = {name: bool(d_t[i]) for i, name in enumerate(agents_order)}
+            s_d = {f'agent_{i}': traj['states'][t][i] for i in range(2)}
+            a_d = {f'agent_{i}': traj['actions'][t][i] for i in range(2)}
+            r_d = {f'agent_{i}': traj['rewards'][t][i] for i in range(2)}
+            ns_d = {f'agent_{i}': traj['states'][t+1][i] for i in range(2)}
+            d_d = {f'agent_{i}': bool(traj['dones'][t][i]) for i in range(2)}
             
             if self.use_vdn:
-                self.agents['vdn'].store_transition(s_dict, a_dict, r_dict, ns_dict, d_dict)
-                # ご要望通り、毎ステップ学習を行う元の仕様を維持しています
+                self.agents['vdn'].store_transition(s_d, a_d, r_d, ns_d, d_d)
                 self.agents['vdn'].train()
             else:
-                for i, name in enumerate(agents_order):
-                    self.agents[name].store_transition(
-                        s_dict[name], a_dict[name], r_dict[name], ns_dict[name], d_dict[name]
-                    )
-                    # ご要望通り、毎ステップ学習を行う元の仕様を維持しています
-                    self.agents[name].train()
+                for i in range(2):
+                    n = f'agent_{i}'
+                    self.agents[n].store_transition(s_d[n], a_d[n], r_d[n], ns_d[n], d_d[n])
+                    self.agents[n].train()
+
+    def _save_stats_to_csv(self):
+        mode = "vdn" if self.use_vdn else "dqn"
+        path = f"results/stats_{mode}.csv"
+        os.makedirs("results", exist_ok=True)
+        if self.stats_log:
+            with open(path, 'w', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=self.stats_log[0].keys())
+                w.writeheader()
+                w.writerows(self.stats_log)

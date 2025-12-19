@@ -3,22 +3,28 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     """環境とエージェント共通設定"""
-    # TAR2の効果を確認するため、スパース報酬設定に変更（途中報酬を0にする）
     delivery_reward: float = 100.0
-    pickup_reward: float = 50.0       # 元に戻す
-    collision_penalty: float = -10.0  # 元に戻す
-    step_cost: float = -0.01           # 元に戻す
-    wait_penalty: float = 0.0        # 元に戻す
+    pickup_reward: float = 30.0
+    collision_penalty: float = -10.0
+    step_cost: float = -0.05
+    wait_penalty: float = 0.0          # 環境クラスとの互換性のために必須
     
-    coop_bonus_threshold: float = 20.0
-    max_steps: int = 500
+    # --- 協調・環境設定 ---
+    coop_bonus_threshold: float = 20.0 # 今回のエラー原因：追加
+    coop_factor: float = 0.5           # 環境が参照する可能性があるため追加
     grid_size: int = 15
     local_obs_size: int = 5
-    coop_factor: float = 0.5
+    max_steps: int = 600
+    
+    # --- 最適化用設定（サボり・放置防止） ---
+    customer_patience_limit: int = 200
+    penalty_customer_left: float = -50.0 
+    holding_item_step_cost: float = -0.3  # 料理を持ったまま移動・待機する追加コスト
+    idle_penalty: float = -0.2            # その場に留まることへのペナルティ
+    # --------------------------------------
 
 @dataclass
 class AgentConfig:
-    """エージェント学習設定"""
     lr: float = 0.0001
     epsilon: float = 1.0
     epsilon_decay: float = 0.9997
@@ -26,18 +32,13 @@ class AgentConfig:
     gamma: float = 0.95
     batch_size: int = 128
     buffer_capacity: int = 50000
-    use_vdn: bool = False  # VDN を使用するか
-    use_tar2: bool = False # TAR2 (報酬再分配) を使用するか <--- 追加
+    use_vdn: bool = True
+    use_tar2: bool = False
 
 @dataclass
 class TrainingConfig:
-    """学習ループ設定"""
-    num_episodes: int = 15000
+    num_episodes: int = 20000
     use_shared_replay: bool = True
-    target_update_interval: int = 10
-    log_interval: int = 100
     agent_config: AgentConfig = None
-    
     def __post_init__(self):
-        if self.agent_config is None:
-            self.agent_config = AgentConfig()
+        if self.agent_config is None: self.agent_config = AgentConfig()

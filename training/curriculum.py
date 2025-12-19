@@ -1,67 +1,61 @@
 class Curriculum:
     """
-    タイムアウト機能付き適応的カリキュラム
+    案A：配達数（Served Count）ベースの適応的カリキュラム
     """
     def __init__(self):
         self.current_stage_idx = 0
         self.stages = [
-            # Stage 1: Basic
+            # Stage 1: 家具はあるが壁はない広場
             {
                 'layout': 'empty', 'customers': True, 'spawn_interval': 60,
-                'description': 'Stage 1: Basic Mechanics',
-                'threshold': 10.0,       # クリア目標
-                'timeout_episodes': 2000 # ★制限時間（これを超えたら強制進行）
+                'description': 'Stage 1: Basic Delivery (No Walls)',
+                'threshold': 3.0,        # 平均3件配膳できたら次へ
+                'timeout_episodes': 2000 # セーフティネット
             },
-            # Stage 2: Navigation
+            # Stage 2: 障害物回避
             {
                 'layout': 'basic', 'customers': True, 'spawn_interval': 40,
                 'description': 'Stage 2: Obstacle Navigation',
-                'threshold': 20.0,
-                'timeout_episodes': 3000 # 3000エピソード猶予を与える
+                'threshold': 5.0,        # 平均5件配膳
+                'timeout_episodes': 3000
             },
-            # Stage 3: Complex
+            # Stage 3: 複雑な環境
             {
                 'layout': 'complex', 'customers': True, 'spawn_interval': 40,
                 'description': 'Stage 3: Complex Environment',
-                'threshold': 30.0,
+                'threshold': 7.0,        # 平均7件配膳
                 'timeout_episodes': 4000
             },
-            # Stage 4: High Load (Final)
+            # Stage 4: 高負荷（最終段階）
             {
                 'layout': 'complex', 'customers': True, 'spawn_interval': 20,
                 'description': 'Stage 4: High Load Efficiency',
-                'threshold': float('inf'), # 最終ステージなのでクリアなし
+                'threshold': float('inf'), 
                 'timeout_episodes': float('inf')
             },
         ]
     
     def get_current_stage(self):
+        """現在のステージ設定を取得"""
         return self.stages[self.current_stage_idx]
 
-    def check_progression(self, recent_performance, episodes_spent_in_stage):
+    def check_progression(self, avg_served_count, episodes_spent_in_stage):
         """
-        進捗判定
-        Args:
-            recent_performance (float): 最近の成績
-            episodes_spent_in_stage (int): このステージに滞在してからの経過エピソード数
-        Returns:
-            (bool, str): (進むかどうか, 理由)
+        配達数に基づいた進捗判定
         """
-        # 最終ステージなら何もしない
         if self.current_stage_idx >= len(self.stages) - 1:
             return False, None
-            
+        
         current_config = self.stages[self.current_stage_idx]
         target = current_config['threshold']
         limit = current_config['timeout_episodes']
         
-        # 1. 目標達成パターン (Ideal)
-        if recent_performance >= target:
+        # 目標配達数達成による進行
+        if avg_served_count >= target:
             self.current_stage_idx += 1
-            return True, "SUCCESS (Score Reached)"
+            return True, "SUCCESS (Delivery Target Reached)"
             
-        # 2. タイムアウトパターン (Safety Net)
-        # 局所解にハマった場合、ここで強制的に環境を変えることで脱出を図る
+        # タイムアウトによる強制進行
         if episodes_spent_in_stage >= limit:
             self.current_stage_idx += 1
             return True, "TIMEOUT (Forced Progression)"
