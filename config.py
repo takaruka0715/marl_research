@@ -3,8 +3,8 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     """環境とエージェント共通設定"""
-    delivery_reward: float = 100.0
-    pickup_reward: float = 30.0
+    delivery_reward: float = 200.0
+    pickup_reward: float = 50.0
     collision_penalty: float = -10.0
     step_cost: float = -0.05
     wait_penalty: float = 0.0          # 環境クラスとの互換性のために必須
