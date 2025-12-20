@@ -5,23 +5,23 @@ class Config:
     """環境とエージェント共通設定"""
     delivery_reward: float = 200.0
     pickup_reward: float = 50.0
-    collision_penalty: float = -10.0
-    step_cost: float = -0.05
-    wait_penalty: float = 0.0          # 環境クラスとの互換性のために必須
+    # 緩和：衝突の痛みを減らし、移動を促す
+    collision_penalty: float = -2.0  
+    step_cost: float = -0.01
+    wait_penalty: float = 0.0          
     
     # --- 協調・環境設定 ---
-    coop_bonus_threshold: float = 20.0 # 今回のエラー原因：追加
-    coop_factor: float = 0.5           # 環境が参照する可能性があるため追加
+    coop_bonus_threshold: float = 20.0 
+    coop_factor: float = 0.5         
     grid_size: int = 15
     local_obs_size: int = 5
     max_steps: int = 600
     
-    # --- 最適化用設定（サボり・放置防止） ---
+    # --- 最適化用設定（初期学習のために大幅に緩和） ---
     customer_patience_limit: int = 200
     penalty_customer_left: float = -50.0 
-    holding_item_step_cost: float = -0.3  # 料理を持ったまま移動・待機する追加コスト
-    idle_penalty: float = -0.2            # その場に留まることへのペナルティ
-    # --------------------------------------
+    holding_item_step_cost: float = -0.05  # 緩和
+    idle_penalty: float = -0.05            # 緩和
 
 @dataclass
 class AgentConfig:
