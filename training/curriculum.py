@@ -10,14 +10,14 @@ class Curriculum:
                 'layout': 'empty', 'customers': True, 'spawn_interval': 60,
                 'description': 'Stage 1: Basic Delivery (No Walls)',
                 'threshold': 3.0,        # 平均3件配膳できたら次へ
-                'timeout_episodes': 2000 # セーフティネット
+                'timeout_episodes': 4000 # セーフティネット
             },
             # Stage 2: 障害物回避
             {
                 'layout': 'basic', 'customers': True, 'spawn_interval': 40,
                 'description': 'Stage 2: Obstacle Navigation',
                 'threshold': 5.0,        # 平均5件配膳
-                'timeout_episodes': 3000
+                'timeout_episodes': 4000
             },
             # Stage 3: 複雑な環境
             {

@@ -19,7 +19,8 @@ class Config:
     
     # --- 最適化用設定（初期学習のために大幅に緩和） ---
     customer_patience_limit: int = 200
-    penalty_customer_left: float = -50.0 
+    #penalty_customer_left: float = -50.0 
+    penalty_customer_left: float = -50.0
     holding_item_step_cost: float = -0.05  # 緩和
     idle_penalty: float = -0.05            # 緩和
 

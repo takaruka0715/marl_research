@@ -11,13 +11,18 @@ class RestaurantEnv(AECEnv):
     metadata = {"name": "restaurant_v2_cooking", "render_modes": ["human", "rgb_array"]}
     
     def __init__(self, grid_size=15, layout_type='basic', enable_customers=True,
-                 customer_spawn_interval=20, local_obs_size=5, config=None):
+                customer_spawn_interval=20, local_obs_size=5, config=None):
         super().__init__()
         self.grid_size = grid_size
         self.layout_type = layout_type
         self.config = config
-        self.record_enabled = False 
+        self.record_enabled = False
         
+        # 観測空間の設計: 最大座席数を32に設定
+        self.max_seats_to_observe = 32
+        # 基本情報6次元 + 座席情報 (注文有無1 + 相対距離2) * 32座席 = 102次元
+        self.obs_dim = 6 + (self.max_seats_to_observe * 3)
+
         if config is not None:
             self.reward_params = {
                 'delivery': config.delivery_reward,
@@ -42,7 +47,7 @@ class RestaurantEnv(AECEnv):
         
         self.action_spaces = {agent: spaces.Discrete(4) for agent in self.possible_agents}
         self.observation_spaces = {
-            agent: spaces.Box(low=-1, high=1, shape=(15,), dtype=np.float32)
+            agent: spaces.Box(low=-1, high=1, shape=(self.obs_dim,), dtype=np.float32)
             for agent in self.possible_agents
         }
         
@@ -50,26 +55,35 @@ class RestaurantEnv(AECEnv):
         self.reset()
 
     def observe(self, agent):
+        """全座席の注文状態（有無＋相対座標）を観測"""
         pos = self.agent_positions[agent]
         inv = self.agent_inventory[agent]
-        obs = np.zeros(15, dtype=np.float32)
+        obs = np.zeros(self.obs_dim, dtype=np.float32)
         
+        # 1. 自己情報
         obs[0] = pos[0] / self.grid_size
         obs[1] = pos[1] / self.grid_size
         obs[2] = float(inv)
       
+        # 2. 調理カウンター相対位置
         if self.counter_pos:
             obs[3] = (self.counter_pos[0] - pos[0]) / self.grid_size
             obs[4] = (self.counter_pos[1] - pos[1]) / self.grid_size
+       
+        # 3. 準備完了の料理数
+        obs[5] = min(self.ready_dishes / 10.0, 1.0)
+        
+        # 4. 全座席の状態と位置情報
+        for i, seat_pos in enumerate(self.seats):
+            if i >= self.max_seats_to_observe:
+                break
             
-        if self.active_orders:
-            dists = [abs(pos[0]-o[0]) + abs(pos[1]-o[1]) for o in self.active_orders]
-            nearest_idx = np.argmin(dists)
-            target = self.active_orders[nearest_idx]
-            obs[5] = (target[0] - pos[0]) / self.grid_size
-            obs[6] = (target[1] - pos[1]) / self.grid_size
+            base_idx = 6 + (i * 3)
+            is_ordered = 1.0 if seat_pos in self.active_orders else 0.0
             
-        obs[7] = min(self.ready_dishes / 10.0, 1.0)
+            obs[base_idx] = is_ordered
+            obs[base_idx + 1] = (seat_pos[0] - pos[0]) / self.grid_size
+            obs[base_idx + 2] = (seat_pos[1] - pos[1]) / self.grid_size
         
         return obs
 
@@ -77,16 +91,10 @@ class RestaurantEnv(AECEnv):
         x, y = self.agent_positions[agent]
         direction = self.agent_directions[agent]
         new_x, new_y = x, y
-        
         dr, dc = [(-1, 0), (0, 1), (1, 0), (0, -1)][direction]
-        
-        if action == 0:   # 前進
-            new_x, new_y = x + dr, y + dc
-        elif action == 1: # 右回転
-            self.agent_directions[agent] = (direction + 1) % 4
-        elif action == 2: # 左回転
-            self.agent_directions[agent] = (direction - 1) % 4
-            
+        if action == 0: new_x, new_y = x + dr, y + dc
+        elif action == 1: self.agent_directions[agent] = (direction + 1) % 4
+        elif action == 2: self.agent_directions[agent] = (direction - 1) % 4
         if (new_x, new_y) != (x, y):
             other_agents = [self.agent_positions[a] for a in self.possible_agents if a != agent]
             if (new_x, new_y) in self.obstacles_set or (new_x, new_y) in other_agents:
@@ -115,33 +123,26 @@ class RestaurantEnv(AECEnv):
         self._agent_selector = agent_selector(self.agents)
         self.agent_selection = self._agent_selector.next()
         self.customer_manager.customers = []
-        self.history = [] 
+        self.history = []
 
     def step(self, action):
         agent = self.agent_selection
         if self.truncations[agent]:
             self.agent_selection = self._agent_selector.next()
             return
-
-        # --- 修正: 毎ステップの最初でキャンセル情報をリセットし、Trainerの加算報酬を維持する ---
-        self.last_step_cancelled = 0 
-        
+        self.last_step_cancelled = 0
         self._move_agent(agent, action)
         self._process_interaction(agent)
-
         if agent == self.possible_agents[-1]:
             self.customer_manager.steps_since_last_spawn += 1
             if self.customer_manager.steps_since_last_spawn >= self.customer_manager.spawn_interval:
                 self.customer_manager.spawn_customer(self.entrance_pos, self.seats)
                 self.customer_manager.steps_since_last_spawn = 0
-            
             new_orders, new_kitchen, cancel_num = self.customer_manager.update_customers()
-            self.last_step_cancelled = cancel_num 
+            self.last_step_cancelled = cancel_num
             for o in new_orders:
                 if o not in self.active_orders: self.active_orders.append(o)
             if new_kitchen: self.ready_dishes += len(new_kitchen)
-
-            # --- 修正: 履歴の記録 (GIF作成用) ---
             if self.record_enabled:
                 self.history.append({
                     'agent_positions': self.agent_positions.copy(),
@@ -151,7 +152,6 @@ class RestaurantEnv(AECEnv):
                     'active_orders': self.active_orders.copy(),
                     'ready_dishes': self.ready_dishes
                 })
-
         self.num_moves += 1
         if self.num_moves >= self.max_steps:
             self.truncations = {a: True for a in self.possible_agents}
@@ -159,14 +159,11 @@ class RestaurantEnv(AECEnv):
 
     def _process_interaction(self, agent):
         pos = self.agent_positions[agent]
-        # ピックアップ判定
         if self.counter_pos and abs(pos[0]-self.counter_pos[0]) + abs(pos[1]-self.counter_pos[1]) <= 1:
             if self.ready_dishes > 0 and self.agent_inventory[agent] < 1:
                 self.ready_dishes -= 1
                 self.agent_inventory[agent] = 1
                 self.rewards[agent] += self.reward_params['pickup']
-        
-        # 配膳判定
         if self.agent_inventory[agent] > 0:
             for op in self.active_orders[:]:
                 if abs(pos[0]-op[0]) + abs(pos[1]-op[1]) <= 1:
@@ -183,8 +180,3 @@ class RestaurantEnv(AECEnv):
     def action_space(self, agent): return self.action_spaces[agent]
     def get_agent_pos(self, agent): return self.agent_positions[agent]
     def check_and_handle_timeouts(self): return self.last_step_cancelled
-   
-    def get_average_wait_time(self):
-        if not self.customer_manager.customers: return {'all': 0.0}
-        waits = [c.wait_time for c in self.customer_manager.customers]
-        return {'all': np.mean(waits)}
