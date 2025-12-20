@@ -25,7 +25,7 @@ class Trainer:
         env.reset()
         states_seq, actions_seq, rewards_seq, dones_seq = [], [], [], []
         states = {a: env.observe(a) for a in env.possible_agents}
-        reward_sum, cancelled = 0, 0
+        reward_sum, cancelled_total = 0, 0
         prev_positions = {a: None for a in env.possible_agents}
 
         for step in range(self.config.max_steps):
@@ -36,25 +36,33 @@ class Trainer:
                 for a in env.possible_agents:
                     actions[a] = self.agents[a].select_action(states[a])
             
+            # --- 修正: 報酬の初期化をTrainer側で管理し、シェイピング報酬を加算 ---
             for a in env.possible_agents:
+                env.rewards[a] = 0 # ステップ開始時にリセット
+                
+                # 所持ペナルティ
                 if states[a][2] > 0: 
                     env.rewards[a] += self.config.holding_item_step_cost
+                
+                # 静止ペナルティ
                 curr_pos = env.get_agent_pos(a)
                 if curr_pos == prev_positions[a]: 
                     env.rewards[a] += self.config.idle_penalty
                 prev_positions[a] = curr_pos
 
+            # 環境の更新
+            for a in env.possible_agents:
                 if env.agent_selection == a: 
                     env.step(actions[a])
             
-            # 【バグ修正】タイムアウト発生時のみペナルティを課す [cite: 135, 136]
-            if hasattr(env, 'check_and_handle_timeouts'):
-                timeout_num = env.check_and_handle_timeouts()
-                if timeout_num > 0:
-                    cancelled += timeout_num
-                    for a in env.possible_agents: 
-                        env.rewards[a] += self.config.penalty_customer_left
+            # 顧客キャンセルペナルティの適用
+            timeout_num = env.check_and_handle_timeouts()
+            if timeout_num > 0:
+                cancelled_total += timeout_num
+                for a in env.possible_agents: 
+                    env.rewards[a] += self.config.penalty_customer_left
 
+            # データの記録
             step_s, step_a, step_r, step_d = [], [], [], []
             for a in env.possible_agents:
                 step_s.append(env.observe(a))
@@ -72,14 +80,25 @@ class Trainer:
             if all(env.truncations.values()): break
             states = {a: env.observe(a) for a in env.possible_agents}
         
-        return {'states': np.array(states_seq), 'actions': np.array(actions_seq), 'rewards': np.array(rewards_seq), 
-                'dones': np.array(dones_seq), 'total_reward': reward_sum, 'cancelled_count': cancelled}
+        return {
+            'states': np.array(states_seq), 
+            'actions': np.array(actions_seq), 
+            'rewards': np.array(rewards_seq), 
+            'dones': np.array(dones_seq), 
+            'total_reward': reward_sum, 
+            'cancelled_count': cancelled_total
+        }
 
     def train(self):
         current_stage = self.curriculum.get_current_stage()
         self.stage_transitions.append((0, current_stage['description']))
-        current_env = RestaurantEnv(layout_type=current_stage['layout'], enable_customers=current_stage['customers'],
-                                   customer_spawn_interval=current_stage['spawn_interval'], config=self.config)
+        current_env = RestaurantEnv(
+            layout_type=current_stage['layout'], 
+            enable_customers=current_stage['customers'],
+            customer_spawn_interval=current_stage['spawn_interval'], 
+            config=self.config
+        )
+        
         state_dim = 15
         action_dim = 4
         shared_buffer = SharedReplayBuffer(capacity=50000) if self.use_shared_replay else None
@@ -90,9 +109,11 @@ class Trainer:
             self.agents = {a: DQNAgent(state_dim, action_dim, shared_buffer=shared_buffer) for a in current_env.possible_agents}
         
         stage_ep_count = 0
+    
         for episode in range(self.num_episodes):
             avg_served = np.mean(self.total_served_history[-50:]) if self.total_served_history else 0
             should_proceed, _ = self.curriculum.check_progression(avg_served, stage_ep_count)
+            
             if should_proceed:
                 current_stage = self.curriculum.get_current_stage()
                 self.stage_transitions.append((episode, current_stage['description']))
@@ -107,17 +128,19 @@ class Trainer:
             stage_ep_count += 1
             served_total = sum(current_env.served_count.values())
             self.total_served_history.append(served_total)
+            
             for a in current_env.possible_agents:
                 self.episode_rewards[a].append(traj['total_reward'] / 2)
                 self.avg_rewards[a].append(np.mean(self.episode_rewards[a][-50:]))
                 self.served_stats[a].append(current_env.served_count[a])
             
             self._store_and_train_agents(traj)
+            
             if self.use_vdn: self.agents['vdn'].decay_epsilon()
             else: [a.decay_epsilon() for a in self.agents.values()]
+            
             if episode % 10 == 0: [a.update_target_network() for a in self.agents.values()]
             
-            # 【元の出力形式を復元】 
             if episode % 100 == 0:
                 avg_r = self.avg_rewards['agent_0'][-1]
                 eps = self.agents['vdn'].epsilon if self.use_vdn else self.agents['agent_0'].epsilon
