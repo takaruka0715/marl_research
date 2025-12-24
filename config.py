@@ -3,8 +3,8 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     """環境とエージェント共通設定"""
-    delivery_reward: float = 200.0
-    pickup_reward: float = 50.0
+    delivery_reward: float = 500.0
+    pickup_reward: float = 100.0
     # 緩和：衝突の痛みを減らし、移動を促す
     collision_penalty: float = -2.0  
     step_cost: float = -0.01
@@ -28,7 +28,7 @@ class Config:
 class AgentConfig:
     lr: float = 0.0001
     epsilon: float = 1.0
-    epsilon_decay: float = 0.9997
+    epsilon_decay: float = 0.9995
     epsilon_min: float = 0.05
     gamma: float = 0.95
     batch_size: int = 128
