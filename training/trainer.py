@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import random
-from env import RestaurantEnv
+from envs import RestaurantEnv
 from agents import DQNAgent, VDNAgent, SharedReplayBuffer
 from agents.tar2 import TAR2Network, collate_trajectories
 from .curriculum import Curriculum
