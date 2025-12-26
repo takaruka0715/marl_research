@@ -201,12 +201,13 @@ class RestaurantEnv(AECEnv):
                              if c.state in ['seated', 'ordered', 'served']]
         other_positions = [pos for a, pos in self.agent_positions.items() if a != agent]
         
-        if check_collision((new_x, new_y), self.obstacles, customer_positions, other_positions):
+        if check_collision((new_x, new_y), self.obstacles, 
+                          customer_positions, other_positions, self.seats):
             self.rewards[agent] = self.reward_params['collision']
             self.collision_count[agent] += 1
             collision = True
             new_x, new_y = x, y
-        
+            
         if not collision:
             self.agent_positions[agent] = (new_x, new_y)
         

@@ -21,11 +21,13 @@ class LayoutBuilder:
             LayoutBuilder._add_table(obstacles, tables, seats, 3, 3, grid_size)
         
         elif layout_type == 'basic':
+            # テーブル数を 2つに削減
             obstacles = LayoutBuilder._add_walls(obstacles, grid_size)
             counter_pos = (7, 1)
             LayoutBuilder._add_counter(obstacles, 7, 1, length=3, horizontal=False)
             
-            for tx, ty in [(3, 3), (3, 8), (8, 3), (8, 8), (6, 11)]:
+            # 対角線上に配置し、広い移動スペースを確保
+            for tx, ty in [(4, 4), (10, 10)]:
                 LayoutBuilder._add_table(obstacles, tables, seats, tx, ty, grid_size)
             entrance_pos = (1, 7)
         
@@ -34,13 +36,24 @@ class LayoutBuilder:
             counter_pos = (7, 1)
             LayoutBuilder._add_counter(obstacles, 7, 1, length=5, horizontal=False)
             
-            for i in range(3):
+            # --- 再設計されたテーブル配置 ---
+            # 四隅に配置し、中央と外周に通路を確保
+            # (x, y) はテーブルの左上座標
+            table_positions = [
+                (2, 2),   # 左上
+                (2, 11),  # 右上
+                (11, 2),  # 左下
+                (11, 11), # 右下
+                (6, 7)    # 中央やや右（アイランド型）
+            ]
+            
+            for tx, ty in table_positions:
+                LayoutBuilder._add_table(obstacles, tables, seats, tx, ty, grid_size)
+            
+            # 追加の装飾的障害物（カウンター付近の仕切り）
+            for i in range(2):
                 obstacles.append((12, 5 + i))
             
-            for tx in [2, 6, 10]:
-                for ty in [2, 6, 10]:
-                    LayoutBuilder._add_table(obstacles, tables, seats, tx, ty, grid_size)
-            LayoutBuilder._add_table(obstacles, tables, seats, 4, 12, grid_size)
             entrance_pos = (1, 7)
         
         return obstacles, tables, seats, counter_pos, entrance_pos
