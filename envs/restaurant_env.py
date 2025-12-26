@@ -54,6 +54,21 @@ class RestaurantEnv(AECEnv):
             agent: spaces.Box(low=-5, high=grid_size, shape=(obs_dim,), dtype=np.float32)
             for agent in self.possible_agents
         }
+
+        # 追加: 最大座席数の定義 (Complexレイアウトの最大20席程度を想定)
+        self.max_seats_obs = 20 
+        # 各座席につき 4要素 (x, y, occupied_flag, order_flag)
+        self.seat_obs_dim = self.max_seats_obs * 4 
+        
+        # 観測空間の次元数を更新
+        # 既存の17次元 (local_obs_size(5) + extra_dim(12)) に座席情報を加算 [cite: 94, 108]
+        obs_extra_dim = 12 + self.seat_obs_dim
+        obs_dim = self.local_obs_size + obs_extra_dim
+        
+        self._observation_spaces = {
+            agent: spaces.Box(low=-5, high=grid_size, shape=(obs_dim,), dtype=np.float32)
+            for agent in self.possible_agents
+        }
         
         self.reset()
     
@@ -174,8 +189,42 @@ class RestaurantEnv(AECEnv):
         obs[idx+9] = 1.0 if current_inv < 4 else 0.0
         obs[idx+10] = min(self.ready_dishes, 5) / 5.0
         obs[idx+11] = 1.0 if self.ready_dishes > 0 else 0.0
+
+        seat_information = []
+        active_customer_seats = [c.seat_position for c in self.customer_manager.customers 
+                                 if c.state in ['seated', 'ordered', 'served']] # [cite: 181]
+
+        for i in range(self.max_seats_obs):
+            if i < len(self.seats):
+                sx, sy = self.seats[i]
+                # 1. 座席座標 (正規化)
+                seat_information.append(sx / self.grid_size)
+                seat_information.append(sy / self.grid_size)
+                
+                # 2. 客の有無 (0 or 1)
+                is_occupied = 1.0 if (sx, sy) in active_customer_seats else 0.0
+                seat_information.append(is_occupied)
+                
+                # 3. 注文の有無 (0 or 1)
+                # self.active_orders に座席座標が含まれているか確認 [cite: 116, 124]
+                is_ordered = 1.0 if (sx, sy) in self.active_orders else 0.0
+                seat_information.append(is_ordered)
+            else:
+                # 最大数に満たない場合はゼロパディング
+                seat_information.extend([0.0, 0.0, 0.0, 0.0])
+
+        # --- 観測ベクトルの統合 ---
+        # 既存のベクトル (local_obs(5) + self_info(12))
+        base_obs = np.zeros(self.local_obs_size + 12, dtype=np.float32)
+        # ... (既存の obs への代入処理: obs[idx+8] = current_inv / 4.0 など) [cite: 108]
         
-        return obs
+        # 最終的な観測ベクトルを結合
+        full_obs = np.concatenate([
+            self._get_standard_obs(agent), # 既存の17次元分を返す補助関数と想定
+            np.array(seat_information, dtype=np.float32)
+        ])
+        
+        return full_obs
     
     def _move_agent(self, agent, action):
         """エージェント移動と衝突処理"""
@@ -207,7 +256,7 @@ class RestaurantEnv(AECEnv):
             self.collision_count[agent] += 1
             collision = True
             new_x, new_y = x, y
-            
+
         if not collision:
             self.agent_positions[agent] = (new_x, new_y)
         
