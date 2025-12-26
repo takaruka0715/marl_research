@@ -87,8 +87,15 @@ class Trainer:
             # agent_0 の平均報酬を代表値として使用
             current_served_performance = 0
             if len(self.served_stats['agent_0']) > 0:
-                # 直近50エピソードの平均を算出 [cite: 151, 159]
-                current_served_performance = np.mean(self.served_stats['agent_0'][-50:])
+                recent_indices = range(-min(50, len(self.served_stats['agent_0'])), 0)
+                # 全エージェントのカウントを合計する
+                total_served_list = [
+                    sum(self.served_stats[agent][i] for agent in current_env.possible_agents)
+                    for i in recent_indices
+                ]
+                current_served_performance = np.mean(total_served_list)
+            else:
+                current_served_performance = 0
 
             # check_progression に配膳数の平均を渡すように変更 [cite: 143]
             should_proceed, reason = self.curriculum.check_progression(
@@ -188,11 +195,26 @@ class Trainer:
             
             # ログ表示
             if episode % 100 == 0:
-                avg_0 = self.avg_rewards['agent_0'][-1]
-                served_0 = np.mean(self.served_stats['agent_0'][-50:])
+                # 1. 平均報酬（直近50エピソードの移動平均）の取得 
+                # エージェントごとの平均報酬を合計してチーム全体の成果とする
+                avg_0 = self.avg_rewards['agent_0'][-1] if self.avg_rewards['agent_0'] else 0
+                avg_1 = self.avg_rewards['agent_1'][-1] if self.avg_rewards['agent_1'] else 0
+                team_avg_reward = avg_0 + avg_1
+
+                # 2. 配膳数の統計（直近50エピソード） 
+                served_a0 = np.mean(self.served_stats['agent_0'][-50:])
+                served_a1 = np.mean(self.served_stats['agent_1'][-50:])
+                total_served = served_a0 + served_a1
+                
+                # 3. 探索率とTAR2の状態取得
                 eps = self.agents['vdn'].epsilon if self.use_vdn else self.agents['agent_0'].epsilon
                 tar2_msg = " | TAR2 Shaped" if self.use_tar2 else ""
-                print(f"Ep {episode:4d} | StgEp: {stage_episode_count:4d} | AvgReward: {avg_0:6.1f} | Served: {served_0:.1f} | ε={eps:.3f}{tar2_msg}")
+                
+                # ログ表示の更新
+                print(f"Ep {episode:4d} | StgEp: {stage_episode_count:4d} | "
+                      f"AvgReward: {team_avg_reward:6.1f} | "  # ← ここに復活させました
+                      f"Total Served: {total_served:4.1f} (A0:{served_a0:.1f}, A1:{served_a1:.1f}) | "
+                      f"ε={eps:.3f}{tar2_msg}")
         
         return self.agents, self.episode_rewards, self.avg_rewards, self.served_stats, current_env
 

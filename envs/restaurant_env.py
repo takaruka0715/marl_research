@@ -138,6 +138,7 @@ class RestaurantEnv(AECEnv):
         my_direction = self.agent_directions[agent]
         x, y = my_pos
         
+        # --- 1. グリッド情報の取得 ---
         obs_grid = self.grid.copy().astype(np.float32)
         for other_agent in self.possible_agents:
             if other_agent != agent:
@@ -150,9 +151,9 @@ class RestaurantEnv(AECEnv):
         for order_x, order_y in self.active_orders:
             obs_grid[order_x, order_y] = 4
         
+        # --- 2. ローカル（視界）観測 ---
         dir_vectors = [(-1, 0), (0, 1), (1, 0), (0, -1)]
         dx, dy = dir_vectors[my_direction]
-        
         local_obs = []
         for i in range(self.local_obs_size):
             tx = x + (dx * i)
@@ -162,17 +163,16 @@ class RestaurantEnv(AECEnv):
             else:
                 local_obs.append(-1.0)
         
-        local_obs = np.array(local_obs, dtype=np.float32)
-        obs = np.zeros(len(local_obs) + 12, dtype=np.float32)
-        obs[:len(local_obs)] = local_obs
+        # --- 3. エージェント自身の状態（17次元） ---
+        standard_obs = np.zeros(len(local_obs) + 12, dtype=np.float32)
+        standard_obs[:len(local_obs)] = local_obs
         
         idx = len(local_obs)
-        obs[idx:idx+2] = my_pos
-        obs[idx+2] = my_direction
+        standard_obs[idx:idx+2] = my_pos
+        standard_obs[idx+2] = my_direction
         
         current_inv = self.agent_inventory[agent]
         target_vec = [0, 0]
-        
         if current_inv == 0 and self.counter_pos:
             cx, cy = self.counter_pos
             target_vec = [cx - my_pos[0], cy - my_pos[1]]
@@ -181,46 +181,33 @@ class RestaurantEnv(AECEnv):
                                key=lambda o: abs(o[0]-my_pos[0]) + abs(o[1]-my_pos[1]))
             target_vec = [nearest_order[0] - my_pos[0], nearest_order[1] - my_pos[1]]
         
-        obs[idx+3:idx+5] = target_vec
-        obs[idx+5] = len(self.active_orders)
-        obs[idx+6] = self.served_count[agent]
-        obs[idx+7] = self.collision_count[agent]
-        obs[idx+8] = current_inv / 4.0
-        obs[idx+9] = 1.0 if current_inv < 4 else 0.0
-        obs[idx+10] = min(self.ready_dishes, 5) / 5.0
-        obs[idx+11] = 1.0 if self.ready_dishes > 0 else 0.0
+        standard_obs[idx+3:idx+5] = target_vec
+        standard_obs[idx+5] = len(self.active_orders)
+        standard_obs[idx+6] = self.served_count[agent]
+        standard_obs[idx+7] = self.collision_count[agent]
+        standard_obs[idx+8] = current_inv / 4.0
+        standard_obs[idx+9] = 1.0 if current_inv < 4 else 0.0
+        standard_obs[idx+10] = min(self.ready_dishes, 5) / 5.0
+        standard_obs[idx+11] = 1.0 if self.ready_dishes > 0 else 0.0
 
+        # --- 4. 全座席の状態（80次元） ---
         seat_information = []
         active_customer_seats = [c.seat_position for c in self.customer_manager.customers 
-                                 if c.state in ['seated', 'ordered', 'served']] # [cite: 181]
+                                 if c.state in ['seated', 'ordered', 'served']]
 
         for i in range(self.max_seats_obs):
             if i < len(self.seats):
                 sx, sy = self.seats[i]
-                # 1. 座席座標 (正規化)
-                seat_information.append(sx / self.grid_size)
-                seat_information.append(sy / self.grid_size)
-                
-                # 2. 客の有無 (0 or 1)
-                is_occupied = 1.0 if (sx, sy) in active_customer_seats else 0.0
-                seat_information.append(is_occupied)
-                
-                # 3. 注文の有無 (0 or 1)
-                # self.active_orders に座席座標が含まれているか確認 [cite: 116, 124]
-                is_ordered = 1.0 if (sx, sy) in self.active_orders else 0.0
-                seat_information.append(is_ordered)
+                seat_information.append(sx / self.grid_size) # x座標
+                seat_information.append(sy / self.grid_size) # y座標
+                seat_information.append(1.0 if (sx, sy) in active_customer_seats else 0.0) # 客の有無
+                seat_information.append(1.0 if (sx, sy) in self.active_orders else 0.0)    # 注文の有無
             else:
-                # 最大数に満たない場合はゼロパディング
-                seat_information.extend([0.0, 0.0, 0.0, 0.0])
+                seat_information.extend([0.0, 0.0, 0.0, 0.0]) # ゼロパディング
 
-        # --- 観測ベクトルの統合 ---
-        # 既存のベクトル (local_obs(5) + self_info(12))
-        base_obs = np.zeros(self.local_obs_size + 12, dtype=np.float32)
-        # ... (既存の obs への代入処理: obs[idx+8] = current_inv / 4.0 など) [cite: 108]
-        
-        # 最終的な観測ベクトルを結合
+        # --- 5. 結合 ---
         full_obs = np.concatenate([
-            self._get_standard_obs(agent), # 既存の17次元分を返す補助関数と想定
+            standard_obs,
             np.array(seat_information, dtype=np.float32)
         ])
         
