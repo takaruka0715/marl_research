@@ -4,7 +4,7 @@ from dataclasses import dataclass
 class Config:
     """環境とエージェント共通設定"""
     # TAR2の効果を確認するため、スパース報酬設定に変更（途中報酬を0にする）
-    delivery_reward: float = 100.0
+    delivery_reward: float = 200.0
     pickup_reward: float = 50.0       # 元に戻す
     collision_penalty: float = -10.0  # 元に戻す
     step_cost: float = -0.1           # 元に戻す

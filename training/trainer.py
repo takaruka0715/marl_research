@@ -105,7 +105,7 @@ class Trainer:
                 print(f"   From: {current_stage['description']}")
                 print(f"   To:   {new_stage['description']}")
                 print(f"   Why:  {reason}")
-                print(f"   Perf: {current_performance:.1f} (Target: {current_stage['threshold']})")
+                print(f"   Perf: {current_served_performance:.1f} (Target: {current_stage['threshold']})")
                 print(f"{'='*70}")
                 
                 # [cite_start]新しいステージ設定で環境を再構築 [cite: 79]
