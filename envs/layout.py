@@ -14,8 +14,11 @@ class LayoutBuilder:
         entrance_pos = None
         
         if layout_type == 'empty':
-            counter_pos = (grid_size // 2, grid_size // 2)
-            obstacles.append(counter_pos)
+            obstacles = LayoutBuilder._add_walls(obstacles, grid_size)
+            counter_pos = (7, 1)
+            LayoutBuilder._add_counter(obstacles, 7, 1, length=3, horizontal=False)
+            entrance_pos = (1, 7)
+            LayoutBuilder._add_table(obstacles, tables, seats, 3, 3, grid_size)
         
         elif layout_type == 'basic':
             obstacles = LayoutBuilder._add_walls(obstacles, grid_size)
