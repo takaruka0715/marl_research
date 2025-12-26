@@ -85,12 +85,14 @@ class Trainer:
             # 0. 適応型カリキュラムの進行判定 (閾値/タイムアウト)
             # ----------------------------------------------------
             # agent_0 の平均報酬を代表値として使用
-            current_performance = 0
-            if len(self.avg_rewards['agent_0']) > 0:
-                current_performance = self.avg_rewards['agent_0'][-1]
+            current_served_performance = 0
+            if len(self.served_stats['agent_0']) > 0:
+                # 直近50エピソードの平均を算出 [cite: 151, 159]
+                current_served_performance = np.mean(self.served_stats['agent_0'][-50:])
 
+            # check_progression に配膳数の平均を渡すように変更 [cite: 143]
             should_proceed, reason = self.curriculum.check_progression(
-                current_performance, 
+                current_served_performance, 
                 stage_episode_count
             )
 
