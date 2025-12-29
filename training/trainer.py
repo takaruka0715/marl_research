@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import random
-from env import RestaurantEnv
+from envs import RestaurantEnv
 from agents import DQNAgent, VDNAgent, SharedReplayBuffer
 from agents.tar2 import TAR2Network, collate_trajectories
 from .curriculum import Curriculum
@@ -85,12 +85,21 @@ class Trainer:
             # 0. 適応型カリキュラムの進行判定 (閾値/タイムアウト)
             # ----------------------------------------------------
             # agent_0 の平均報酬を代表値として使用
-            current_performance = 0
-            if len(self.avg_rewards['agent_0']) > 0:
-                current_performance = self.avg_rewards['agent_0'][-1]
+            current_served_performance = 0
+            if len(self.served_stats['agent_0']) > 0:
+                recent_indices = range(-min(50, len(self.served_stats['agent_0'])), 0)
+                # 全エージェントのカウントを合計する
+                total_served_list = [
+                    sum(self.served_stats[agent][i] for agent in current_env.possible_agents)
+                    for i in recent_indices
+                ]
+                current_served_performance = np.mean(total_served_list)
+            else:
+                current_served_performance = 0
 
+            # check_progression に配膳数の平均を渡すように変更 [cite: 143]
             should_proceed, reason = self.curriculum.check_progression(
-                current_performance, 
+                current_served_performance, 
                 stage_episode_count
             )
 
@@ -103,7 +112,7 @@ class Trainer:
                 print(f"   From: {current_stage['description']}")
                 print(f"   To:   {new_stage['description']}")
                 print(f"   Why:  {reason}")
-                print(f"   Perf: {current_performance:.1f} (Target: {current_stage['threshold']})")
+                print(f"   Perf: {current_served_performance:.1f} (Target: {current_stage['threshold']})")
                 print(f"{'='*70}")
                 
                 # [cite_start]新しいステージ設定で環境を再構築 [cite: 79]
@@ -186,11 +195,26 @@ class Trainer:
             
             # ログ表示
             if episode % 100 == 0:
-                avg_0 = self.avg_rewards['agent_0'][-1]
-                served_0 = np.mean(self.served_stats['agent_0'][-50:])
+                # 1. 平均報酬（直近50エピソードの移動平均）の取得 
+                # エージェントごとの平均報酬を合計してチーム全体の成果とする
+                avg_0 = self.avg_rewards['agent_0'][-1] if self.avg_rewards['agent_0'] else 0
+                avg_1 = self.avg_rewards['agent_1'][-1] if self.avg_rewards['agent_1'] else 0
+                team_avg_reward = avg_0 + avg_1
+
+                # 2. 配膳数の統計（直近50エピソード） 
+                served_a0 = np.mean(self.served_stats['agent_0'][-50:])
+                served_a1 = np.mean(self.served_stats['agent_1'][-50:])
+                total_served = served_a0 + served_a1
+                
+                # 3. 探索率とTAR2の状態取得
                 eps = self.agents['vdn'].epsilon if self.use_vdn else self.agents['agent_0'].epsilon
                 tar2_msg = " | TAR2 Shaped" if self.use_tar2 else ""
-                print(f"Ep {episode:4d} | StgEp: {stage_episode_count:4d} | AvgReward: {avg_0:6.1f} | Served: {served_0:.1f} | ε={eps:.3f}{tar2_msg}")
+                
+                # ログ表示の更新
+                print(f"Ep {episode:4d} | StgEp: {stage_episode_count:4d} | "
+                      f"AvgReward: {team_avg_reward:6.1f} | "  # ← ここに復活させました
+                      f"Total Served: {total_served:4.1f} (A0:{served_a0:.1f}, A1:{served_a1:.1f}) | "
+                      f"ε={eps:.3f}{tar2_msg}")
         
         return self.agents, self.episode_rewards, self.avg_rewards, self.served_stats, current_env
 
