@@ -14,7 +14,7 @@ class Config:
     max_steps: int = 500
     grid_size: int = 15
     local_obs_size: int = 5
-    coop_factor: float = 0.5
+    coop_factor: float = 0.0 # 報酬の分配度合い
 
 @dataclass
 class AgentConfig:
