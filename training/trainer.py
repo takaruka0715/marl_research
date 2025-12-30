@@ -194,14 +194,19 @@ class Trainer:
             # Epsilon減衰
             if self.use_vdn:
                 self.agents['vdn'].decay_epsilon()
+            elif getattr(self, 'use_qmix', False): # ここを追加
+                self.agents['qmix'].decay_epsilon()
             else:
                 for agent_name in current_env.possible_agents:
                     self.agents[agent_name].decay_epsilon()
             
             # [cite_start]定期更新 [cite: 90]
+            # 定期更新
             if episode % 10 == 0:
                 if self.use_vdn:
                     self.agents['vdn'].update_target_network()
+                elif getattr(self, 'use_qmix', False): # 追加
+                    self.agents['qmix'].update_target_network()
                 else:
                     for agent_name in current_env.possible_agents:
                         self.agents[agent_name].update_target_network()
@@ -220,7 +225,12 @@ class Trainer:
                 total_served = served_a0 + served_a1
                 
                 # 3. 探索率とTAR2の状態取得
-                eps = self.agents['vdn'].epsilon if self.use_vdn else self.agents['agent_0'].epsilon
+                if self.use_vdn:
+                    eps = self.agents['vdn'].epsilon
+                elif getattr(self, 'use_qmix', False):
+                    eps = self.agents['qmix'].epsilon
+                else:
+                    eps = self.agents['agent_0'].epsilon
                 tar2_msg = " | TAR2 Shaped" if self.use_tar2 else ""
                 
                 # ログ表示の更新
