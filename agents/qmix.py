@@ -79,7 +79,7 @@ class QMIXAgent:
         self.optimizer = optim.Adam(self.params, lr=lr)
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=1000, gamma=0.9)
 
-        self.memory = shared_buffer if shared_buffer else deque(maxlen=50000)
+        self.memory = shared_buffer if shared_buffer is not None else deque(maxlen=50000)
         self.use_shared_buffer = shared_buffer is not None
 
         self.epsilon = 1.0

@@ -329,37 +329,33 @@ class Trainer:
             a_t = trajectory['actions'][t]
             ns_t = trajectory['states'][t+1]
             d_t = trajectory['dones'][t]
-            
-            # QMIX用のグローバル状態を取得
+
+            # QMIX用のグローバル状態
             g_s_t = trajectory['global_states'][t]
             g_ns_t = trajectory['global_states'][t+1]
             
-            # 報酬の決定
             if shaped_rewards is not None:
                 r_t = shaped_rewards[t]
             else:
                 r_t = trajectory['rewards'][t]
 
-            # データを辞書形式に整理
             s_dict = {name: s_t[i] for i, name in enumerate(agents_order)}
             a_dict = {name: a_t[i] for i, name in enumerate(agents_order)}
             r_dict = {name: r_t[i] for i, name in enumerate(agents_order)}
             ns_dict = {name: ns_t[i] for i, name in enumerate(agents_order)}
             d_dict = {name: bool(d_t[i]) for i, name in enumerate(agents_order)}
 
-            # --- アルゴリズムごとの分岐（重複を削除） ---
+            # --- アルゴリズムごとに排他的に実行するよう整理 ---
             if getattr(self, 'use_qmix', False):
-                # 1. QMIX: 単一のエージェントクラスが全エージェントを管理
+                # 1. QMIXの場合
                 self.agents['qmix'].store_transition(s_dict, a_dict, r_dict, ns_dict, d_dict, g_s_t, g_ns_t)
                 self.agents['qmix'].train()
-                
             elif self.use_vdn:
-                # 2. VDN: 辞書形式で一括保存・学習
+                # 2. VDNの場合
                 self.agents['vdn'].store_transition(s_dict, a_dict, r_dict, ns_dict, d_dict)
                 self.agents['vdn'].train()
-                
             else:
-                # 3. 独立DQN: エージェントごとに個別に保存・学習
+                # 3. 独立DQNの場合
                 for i, name in enumerate(agents_order):
                     self.agents[name].store_transition(
                         s_dict[name], a_dict[name], r_dict[name], ns_dict[name], d_dict[name]
