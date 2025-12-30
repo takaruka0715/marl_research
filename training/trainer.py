@@ -234,75 +234,75 @@ class Trainer:
         actions_seq = []
         rewards_seq = []
         dones_seq = []
-        global_states_seq = []  # ★追加: QMIX用のグローバル状態シーケンス 
+        global_states_seq = []  # QMIX用のグローバル状態
 
-        # ★追加: グローバル状態生成のヘルパー関数
+        # [cite_start]グローバル状態（全エージェントの観測結合）を生成する関数 [cite: 387]
         def get_global_state(obs_dict):
             return np.concatenate([obs_dict[a] for a in env.possible_agents])
 
-        # 初期観測の取得 
+        # [cite_start]初期観測の取得 [cite: 388]
         states = {agent: env.observe(agent) for agent in env.possible_agents}
         
-        # ★追加: ループ開始前の初期グローバル状態を取得
+        # [cite_start]初期グローバル状態を取得 [cite: 388]
         current_global_state = get_global_state(states)
         
         episode_reward_sum = 0
-        agents_order = env.possible_agents [cite: 171]
+        agents_order = env.possible_agents 
         
-        for step in range(600): # [cite: 172]
+        for step in range(600): 
             step_states = []
             step_actions = []
             step_rewards = []
             step_dones = []
             
-            current_actions = {} [cite: 173]
-            for agent_name in agents_order: # [cite: 173]
+            current_actions = {} 
+            for agent_name in agents_order: 
                 state = states[agent_name]
                 step_states.append(state)
                 
-                if env.truncations.get(agent_name, False): # [cite: 174]
+                # [cite_start]行動選択 [cite: 390, 391, 392, 393]
+                if env.truncations.get(agent_name, False):
                     action = 0
                 else:
-                    if self.use_vdn: # [cite: 174]
+                    if self.use_vdn:
                         actions_dict = self.agents['vdn'].select_actions(states)
                         action = actions_dict[agent_name]
-                    # ★QMIXの行動選択ロジックもここに追加
-                    elif getattr(self, 'use_qmix', False):
+                    elif getattr(self, 'use_qmix', False): # QMIX対応
                         actions_dict = self.agents['qmix'].select_actions(states)
                         action = actions_dict[agent_name]
                     else:
-                        action = self.agents[agent_name].select_action(state) # [cite: 175]
+                        action = self.agents[agent_name].select_action(state)
                 
                 current_actions[agent_name] = action
                 step_actions.append(action)
 
-            # 環境の更新 [cite: 176]
+            # [cite_start]環境の更新 [cite: 394]
             for agent_name in agents_order:
                 if env.agent_selection == agent_name:
                     env.step(current_actions[agent_name])
             
-            # 次の状態の観測 
+            # [cite_start]次の状態の観測と報酬記録 [cite: 395, 396]
             for agent_name in agents_order:
                 next_obs = env.observe(agent_name)
                 states[agent_name] = next_obs
                 
-                r = env.rewards.get(agent_name, 0) # 
+                r = env.rewards.get(agent_name, 0)
                 d = env.truncations.get(agent_name, False)
                 
                 step_rewards.append(r)
-                step_dones.append(d) # [cite: 178]
+                step_dones.append(d)
                 episode_reward_sum += r
 
-            # ★追加: 記録（現在のグローバル状態を保存し、次のステップのために更新）
+            # [cite_start]現在のステップの情報を保存し、次のグローバル状態を更新 [cite: 388]
             global_states_seq.append(current_global_state)
             current_global_state = get_global_state(states)
 
-            states_seq.append(np.array(step_states)) # [cite: 178]
+            states_seq.append(np.array(step_states))
             actions_seq.append(np.array(step_actions))
             rewards_seq.append(np.array(step_rewards))
             dones_seq.append(np.array(step_dones))
 
-            if all(env.truncations.values()): # [cite: 179]
+            if all(env.truncations.values()): 
                 break
         
         return {
@@ -310,7 +310,7 @@ class Trainer:
             'actions': np.array(actions_seq),
             'rewards': np.array(rewards_seq),
             'dones': np.array(dones_seq),
-            'global_states': np.array(global_states_seq), # ★追加 
+            'global_states': np.array(global_states_seq), # 学習に使用 [cite: 398]
             'total_reward': episode_reward_sum
         }
 
@@ -324,6 +324,9 @@ class Trainer:
             a_t = trajectory['actions'][t]
             ns_t = trajectory['states'][t+1]
             d_t = trajectory['dones'][t]
+
+            g_s_t = trajectory['global_states'][t]
+            g_ns_t = trajectory['global_states'][t+1]
             
             if shaped_rewards is not None:
                 r_t = shaped_rewards[t]
@@ -335,6 +338,17 @@ class Trainer:
             r_dict = {name: r_t[i] for i, name in enumerate(agents_order)}
             ns_dict = {name: ns_t[i] for i, name in enumerate(agents_order)}
             d_dict = {name: bool(d_t[i]) for i, name in enumerate(agents_order)}
+
+            if getattr(self, 'use_qmix', False):
+                self.agents['qmix'].store_transition(s_dict, a_dict, r_dict, ns_dict, d_dict, g_s_t, g_ns_t)
+                self.agents['qmix'].train()
+            elif self.use_vdn:
+                self.agents['vdn'].store_transition(s_dict, a_dict, r_dict, ns_dict, d_dict)
+                self.agents['vdn'].train()
+            else:
+                for i, name in enumerate(agents_order):
+                    self.agents[name].store_transition(s_dict[name], a_dict[name], r_dict[name], ns_dict[name], d_dict[name])
+                    self.agents[name].train()
             
             if self.use_vdn:
                 self.agents['vdn'].store_transition(s_dict, a_dict, r_dict, ns_dict, d_dict)
