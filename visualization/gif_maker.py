@@ -74,7 +74,13 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_cooking.gif'
 
         with torch.no_grad():
             # VDNモードかどうかで分岐
-            if 'vdn' in agents:
+            if 'qmix' in agents:
+                qmix_agent = agents['qmix']
+                agent_idx = int(agent_name.split('_')[1])
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(qmix_agent.device)
+                q_values = qmix_agent.q_network.local_q_networks[agent_idx](state_tensor)
+                action = q_values.argmax().item()
+            elif 'vdn' in agents:
                 # VDNの場合は、1つのエージェントインスタンスを共有して使う
                 vdn_agent = agents['vdn']
                 device = vdn_agent.device

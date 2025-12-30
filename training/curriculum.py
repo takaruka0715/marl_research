@@ -11,21 +11,21 @@ class Curriculum:
             {
                 'layout': 'empty', 'customers': True, 'spawn_interval': 60,
                 'description': 'Stage 1: Basic Mechanics',
-                'threshold': 1.0,        # ★平均1皿以上の配膳でクリア [cite: 126]
+                'threshold': 2.0,        # ★平均1皿以上の配膳でクリア [cite: 126]
                 'timeout_episodes': 2000 
             },
             # Stage 2: Navigation
             {
                 'layout': 'basic', 'customers': True, 'spawn_interval': 40,
                 'description': 'Stage 2: Obstacle Navigation',
-                'threshold': 3.0,        # ★平均3皿以上の配膳でクリア [cite: 127]
+                'threshold': 4.0,        # ★平均3皿以上の配膳でクリア [cite: 127]
                 'timeout_episodes': 3000 
             },
             # Stage 3: Complex
             {
                 'layout': 'complex', 'customers': True, 'spawn_interval': 40,
                 'description': 'Stage 3: Complex Environment',
-                'threshold': 5.0,        # ★平均5皿以上の配膳でクリア [cite: 128]
+                'threshold': 6.0,        # ★平均5皿以上の配膳でクリア [cite: 128]
                 'timeout_episodes': 4000
             },
             # Stage 4: High Load (Final)

@@ -32,7 +32,7 @@ class AgentConfig:
 @dataclass
 class TrainingConfig:
     """学習ループ設定"""
-    num_episodes: int = 15000
+    num_episodes: int = 20000
     use_shared_replay: bool = True
     target_update_interval: int = 10
     log_interval: int = 100

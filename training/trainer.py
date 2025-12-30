@@ -5,16 +5,18 @@ from envs import RestaurantEnv
 from agents import DQNAgent, VDNAgent, SharedReplayBuffer
 from agents.tar2 import TAR2Network, collate_trajectories
 from .curriculum import Curriculum
+from agents.qmix import QMIXAgent
 
 class Trainer:
     """マルチエージェント学習トレーナー（DQN/VDN + TAR2 + 適応型カリキュラム 対応）"""
     
     # 修正: use_tar2 を引数に追加
-    def __init__(self, num_episodes=30000, use_shared_replay=True, use_vdn=False, use_tar2=False, config=None):
+    def __init__(self, num_episodes=30000, use_shared_replay=True, use_qmix=False, use_vdn=False, use_tar2=False, config=None):
         self.num_episodes = num_episodes
         self.use_shared_replay = use_shared_replay
         self.use_vdn = use_vdn
         self.use_tar2 = use_tar2  # 修正: 引数から直接設定
+        self.use_qmix = use_qmix # 追加
         self.config = config
         
         # 適応型カリキュラムを使用
@@ -58,7 +60,13 @@ class Trainer:
         # バッファ・エージェント初期化
         shared_buffer = SharedReplayBuffer(capacity=50000) if self.use_shared_replay else None
         
-        if self.use_vdn:
+        if self.use_qmix:
+            # グローバル状態は全エージェントの観測を結合したものとする例
+            global_state_dim = state_dim * 2 
+            self.agents = {
+                'qmix': QMIXAgent(state_dim, action_dim, global_state_dim, num_agents=2, shared_buffer=shared_buffer)
+            }
+        elif self.use_vdn:
             self.agents = {
                 'vdn': VDNAgent(state_dim, action_dim, num_agents=2, shared_buffer=shared_buffer)
             }
@@ -130,7 +138,7 @@ class Trainer:
                 stage_episode_count = 0
                 
                 # 探索率(epsilon)のリセット（環境が変わったので再探索させる）
-                reset_epsilon = 0.6
+                reset_epsilon = 0.8
                 if self.use_vdn:
                     self.agents['vdn'].epsilon = max(self.agents['vdn'].epsilon, reset_epsilon)
                 else:
@@ -226,59 +234,75 @@ class Trainer:
         actions_seq = []
         rewards_seq = []
         dones_seq = []
-        
+        global_states_seq = []  # ★追加: QMIX用のグローバル状態シーケンス 
+
+        # ★追加: グローバル状態生成のヘルパー関数
+        def get_global_state(obs_dict):
+            return np.concatenate([obs_dict[a] for a in env.possible_agents])
+
+        # 初期観測の取得 
         states = {agent: env.observe(agent) for agent in env.possible_agents}
         
-        # 修正: カリキュラム変更に伴い、ランダム注文生成ロジックは削除しました
+        # ★追加: ループ開始前の初期グローバル状態を取得
+        current_global_state = get_global_state(states)
         
         episode_reward_sum = 0
-        agents_order = env.possible_agents 
+        agents_order = env.possible_agents [cite: 171]
         
-        for step in range(600):
+        for step in range(600): # [cite: 172]
             step_states = []
             step_actions = []
             step_rewards = []
             step_dones = []
             
-            current_actions = {}
-            for agent_name in agents_order:
+            current_actions = {} [cite: 173]
+            for agent_name in agents_order: # [cite: 173]
                 state = states[agent_name]
                 step_states.append(state)
                 
-                if env.truncations.get(agent_name, False):
+                if env.truncations.get(agent_name, False): # [cite: 174]
                     action = 0
                 else:
-                    if self.use_vdn:
+                    if self.use_vdn: # [cite: 174]
                         actions_dict = self.agents['vdn'].select_actions(states)
                         action = actions_dict[agent_name]
+                    # ★QMIXの行動選択ロジックもここに追加
+                    elif getattr(self, 'use_qmix', False):
+                        actions_dict = self.agents['qmix'].select_actions(states)
+                        action = actions_dict[agent_name]
                     else:
-                        action = self.agents[agent_name].select_action(state)
+                        action = self.agents[agent_name].select_action(state) # [cite: 175]
                 
                 current_actions[agent_name] = action
                 step_actions.append(action)
 
+            # 環境の更新 [cite: 176]
             for agent_name in agents_order:
                 if env.agent_selection == agent_name:
                     env.step(current_actions[agent_name])
             
+            # 次の状態の観測 
             for agent_name in agents_order:
                 next_obs = env.observe(agent_name)
                 states[agent_name] = next_obs
                 
-                r = env.rewards.get(agent_name, 0)
+                r = env.rewards.get(agent_name, 0) # 
                 d = env.truncations.get(agent_name, False)
                 
                 step_rewards.append(r)
-                step_dones.append(d)
-                
+                step_dones.append(d) # [cite: 178]
                 episode_reward_sum += r
 
-            states_seq.append(np.array(step_states))
+            # ★追加: 記録（現在のグローバル状態を保存し、次のステップのために更新）
+            global_states_seq.append(current_global_state)
+            current_global_state = get_global_state(states)
+
+            states_seq.append(np.array(step_states)) # [cite: 178]
             actions_seq.append(np.array(step_actions))
             rewards_seq.append(np.array(step_rewards))
             dones_seq.append(np.array(step_dones))
 
-            if all(env.truncations.values()):
+            if all(env.truncations.values()): # [cite: 179]
                 break
         
         return {
@@ -286,6 +310,7 @@ class Trainer:
             'actions': np.array(actions_seq),
             'rewards': np.array(rewards_seq),
             'dones': np.array(dones_seq),
+            'global_states': np.array(global_states_seq), # ★追加 
             'total_reward': episode_reward_sum
         }
 
