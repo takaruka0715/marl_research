@@ -104,7 +104,9 @@ class QMIXAgent:
 
     def store_transition(self, s_dict, a_dict, r_dict, ns_dict, d_dict, global_s, global_ns):
         experience = (s_dict, a_dict, r_dict, ns_dict, d_dict, global_s, global_ns)
-        if self.use_shared_buffer:
+        
+        # バッファが SharedReplayBuffer クラス（addメソッド持ち）か判定して使い分ける
+        if hasattr(self.memory, 'add'):
             self.memory.add(experience)
         else:
             self.memory.append(experience)

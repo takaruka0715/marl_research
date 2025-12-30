@@ -49,8 +49,13 @@ class Trainer:
         )
 
         state_dim = current_env.observation_space('agent_0').shape[0]
+
+        algo_name = "Independent DQN"
+        if self.use_qmix: algo_name = "QMIX"
+        elif self.use_vdn: algo_name = "VDN"
+
         print(f"State Dimension: {state_dim}")
-        print(f"System: {'VDN' if self.use_vdn else 'Independent DQN'} | TAR2: {'ON' if self.use_tar2 else 'OFF'}")
+        print(f"System: {algo_name} | TAR2: {'ON' if self.use_tar2 else 'OFF'}")
         
         # TAR2 初期化
         if self.use_tar2:
