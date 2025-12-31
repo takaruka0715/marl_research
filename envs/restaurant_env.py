@@ -48,7 +48,8 @@ class RestaurantEnv(AECEnv):
         self.agents = self.possible_agents[:]
         self._action_spaces = {agent: spaces.Discrete(4) for agent in self.possible_agents}
         
-        obs_extra_dim = 12
+        self.n_agents = len(self.possible_agents) # 変数名を n_agents に変更
+        obs_extra_dim = 12 + self.seat_obs_dim + self.n_agents # ここも n_agents に
         obs_dim = self.local_obs_size + obs_extra_dim
         self._observation_spaces = {
             agent: spaces.Box(low=-5, high=grid_size, shape=(obs_dim,), dtype=np.float32)
@@ -211,7 +212,14 @@ class RestaurantEnv(AECEnv):
             np.array(seat_information, dtype=np.float32)
         ])
         
-        return full_obs
+        full_obs = super().observe(agent) 
+    
+        agent_idx = self.possible_agents.index(agent)
+        # 変数名を n_agents に合わせて修正
+        agent_id_feature = np.zeros(self.n_agents, dtype=np.float32) 
+        agent_id_feature[agent_idx] = 1.0
+
+        return np.concatenate([full_obs, agent_id_feature])
     
     def _move_agent(self, agent, action):
         """エージェント移動と衝突処理"""

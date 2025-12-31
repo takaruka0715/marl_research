@@ -10,13 +10,15 @@ class VDNNetwork(nn.Module):
     def __init__(self, input_dim, output_dim, num_agents=2):
         super(VDNNetwork, self).__init__()
         self.num_agents = num_agents
-        self.output_dim = output_dim
-        
-        # 各エージェント用のローカルQ値ネットワーク
-        self.local_q_networks = nn.ModuleList([
-            self._build_q_network(input_dim, output_dim) 
-            for _ in range(num_agents)
-        ])
+        # 共有ネットワークを1つだけ定義
+        self.shared_q_network = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, output_dim)
+        )
     
     def _build_q_network(self, input_dim, output_dim):
         """ローカルQ値ネットワークの構築"""
@@ -29,23 +31,16 @@ class VDNNetwork(nn.Module):
             nn.Linear(128, output_dim)
         )
     
-    def forward(self, states):
-        """
-        Args:
-            states: List[torch.Tensor] (各エージェントの状態)
-        Returns:
-            q_locals: List[torch.Tensor] (各エージェントのローカルQ値 [Batch, Action])
-        """
+    def forward(self, states_list):
+        # 入力された全エージェントの状態に対して、同じネットワークを適用
         q_locals = []
-        for i, state in enumerate(states):
-            q_local = self.local_q_networks[i](state)
-            q_locals.append(q_local)
-        
+        for state in states_list:
+            q_locals.append(self.shared_q_network(state))
         return q_locals
     
     def get_local_q(self, agent_idx, state):
-        """特定エージェントのローカルQ値を取得"""
-        return self.local_q_networks[agent_idx](state)
+        # どのエージェントに対しても同じネットワークで計算
+        return self.shared_q_network(state)
 
 # TargetNetworkも構造は同じなので継承または同様に修正
 class VDNTargetNetwork(VDNNetwork):
