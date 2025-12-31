@@ -22,6 +22,11 @@ class RestaurantEnv(AECEnv):
         self.layout_type = layout_type
         self.local_obs_size = local_obs_size
         self.coop_factor = coop_factor
+
+        self.possible_agents = ["agent_0", "agent_1"]
+        self.n_agents = len(self.possible_agents)
+        self.max_seats_obs = 20 
+        self.seat_obs_dim = self.max_seats_obs * 4
         
         # config があれば使う
         if config is not None:
@@ -49,7 +54,7 @@ class RestaurantEnv(AECEnv):
         self._action_spaces = {agent: spaces.Discrete(4) for agent in self.possible_agents}
         
         self.n_agents = len(self.possible_agents) # 変数名を n_agents に変更
-        obs_extra_dim = 12 + self.seat_obs_dim + self.n_agents # ここも n_agents に
+        obs_extra_dim = 12 + self.seat_obs_dim + self.n_agents 
         obs_dim = self.local_obs_size + obs_extra_dim
         self._observation_spaces = {
             agent: spaces.Box(low=-5, high=grid_size, shape=(obs_dim,), dtype=np.float32)
@@ -61,16 +66,14 @@ class RestaurantEnv(AECEnv):
         # 各座席につき 4要素 (x, y, occupied_flag, order_flag)
         self.seat_obs_dim = self.max_seats_obs * 4 
         
-        # 観測空間の次元数を更新
-        # 既存の17次元 (local_obs_size(5) + extra_dim(12)) に座席情報を加算 [cite: 94, 108]
-        obs_extra_dim = 12 + self.seat_obs_dim
-        obs_dim = self.local_obs_size + obs_extra_dim
-        
+        self._action_spaces = {agent: spaces.Discrete(4) for agent in self.possible_agents}
         self._observation_spaces = {
             agent: spaces.Box(low=-5, high=grid_size, shape=(obs_dim,), dtype=np.float32)
             for agent in self.possible_agents
         }
         
+        self.customer_manager = CustomerManager(enable_customers, customer_spawn_interval)
+            
         self.reset()
     
     @functools.lru_cache(maxsize=None)
@@ -211,11 +214,8 @@ class RestaurantEnv(AECEnv):
             standard_obs,
             np.array(seat_information, dtype=np.float32)
         ])
-        
-        full_obs = super().observe(agent) 
     
         agent_idx = self.possible_agents.index(agent)
-        # 変数名を n_agents に合わせて修正
         agent_id_feature = np.zeros(self.n_agents, dtype=np.float32) 
         agent_id_feature[agent_idx] = 1.0
 
