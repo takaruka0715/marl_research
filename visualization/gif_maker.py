@@ -78,7 +78,7 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_cooking.gif'
                 qmix_agent = agents['qmix']
                 agent_idx = int(agent_name.split('_')[1])
                 state_tensor = torch.FloatTensor(state).unsqueeze(0).to(qmix_agent.device)
-                q_values = qmix_agent.q_network.local_q_networks[agent_idx](state_tensor)
+                q_values = qmix_agent.q_network.get_local_q(agent_idx, state_tensor)
                 action = q_values.argmax().item()
             elif 'vdn' in agents:
                 # VDNの場合は、1つのエージェントインスタンスを共有して使う
@@ -92,7 +92,7 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_cooking.gif'
                 
                 # VDNAgentが持つ「個別のローカルQネットワーク」を使って行動決定
                 # agents/vdn.py で定義された local_q_networks リストにアクセス
-                q_values = vdn_agent.q_network.local_q_networks[agent_idx](state_tensor)
+                q_values = vdn_agent.q_network.get_local_q(agent_idx, state_tensor)
                 action = q_values.argmax().item()
                 
             else:
