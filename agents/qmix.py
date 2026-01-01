@@ -98,7 +98,7 @@ class QMIXAgent:
                 with torch.no_grad():
                     state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
                     agent_idx = int(agent_name.split('_')[1])
-                    q_local = self.n_network.get_local_q(agent_idx, state_tensor) # 共通メソッドを使用
+                    q_local = self.q_network.get_local_q(agent_idx, state_tensor) # n_network を q_network に変更
                     actions[agent_name] = q_local.argmax().item()
         return actions
 
