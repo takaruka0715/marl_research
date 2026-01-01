@@ -135,7 +135,7 @@ class Trainer:
                     enable_customers=current_stage['customers'],
                     customer_spawn_interval=current_stage['spawn_interval'],
                     local_obs_size=5,
-                    coop_factor=0.5,
+                    coop_factor=self.config.coop_factor,
                     config=self.config
                 )
                 
