@@ -1,5 +1,5 @@
 import torch
-from configs import Config, AgentConfig, TrainingConfig
+from settings import Config, AgentConfig, TrainingConfig
 from training import Trainer
 from visualization import plot_learning_curves, create_restaurant_gif
 
