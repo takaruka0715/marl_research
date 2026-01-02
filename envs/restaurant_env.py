@@ -3,6 +3,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import numpy as np
 import functools
+import random
 from pettingzoo import AECEnv
 from pettingzoo.utils.agent_selector import agent_selector
 from gymnasium import spaces
@@ -15,7 +16,7 @@ class RestaurantEnv(AECEnv):
     metadata = {"name": "restaurant_v2_cooking", "render_modes": ["human", "rgb_array"]}
     
     def __init__(self, grid_size=15, layout_type='basic', enable_customers=True,
-                 customer_spawn_interval=20, local_obs_size=5, coop_factor=0.5, config=None):
+                 customer_spawn_interval=20, local_obs_size=5, coop_factor=0.0, config=None):
         super().__init__()
         
         self.grid_size = grid_size
@@ -28,7 +29,10 @@ class RestaurantEnv(AECEnv):
         self.max_seats_obs = 20 
         self.seat_obs_dim = self.max_seats_obs * 4
         
-        # config があれば使う
+        # 360度カメラ仕様：周囲8方向 × 各方向の視野ステップ
+        self.num_view_directions = 8 
+        self.view_dim = self.num_view_directions * self.local_obs_size 
+        
         if config is not None:
             self.reward_params = {
                 'delivery': config.delivery_reward,
@@ -39,7 +43,6 @@ class RestaurantEnv(AECEnv):
                 'coop_bonus_threshold': config.coop_bonus_threshold
             }
             self.max_steps = config.max_steps
-            # 修正: configからcoop_factorを読み込む [cite: 106]
             self.coop_factor = config.coop_factor
         else:
             self.reward_params = {
@@ -47,13 +50,13 @@ class RestaurantEnv(AECEnv):
                 'step_cost': -0.1, 'wait_penalty': -0.5, 'coop_bonus_threshold': 20.0
             }
             self.max_steps = 500
-            self.coop_factor = coop_factor # デフォルト値を使用
+            self.coop_factor = coop_factor
         
         self.agents = self.possible_agents[:]
         
-        # 観測次元の再計算: target_vec(2次元)を削除するため 12 -> 10 に変更 [cite: 108, 109]
+        # 観測次元の合計を計算（視野情報 40 + 基本状態 10 + 座席情報 80 + ID 2 = 132次元）
         obs_extra_dim = 10 + self.seat_obs_dim + self.n_agents 
-        obs_dim = self.local_obs_size + obs_extra_dim
+        obs_dim = self.view_dim + obs_extra_dim
         
         self._action_spaces = {agent: spaces.Discrete(4) for agent in self.possible_agents}
         self._observation_spaces = {
@@ -96,7 +99,16 @@ class RestaurantEnv(AECEnv):
             if 0 <= ox < self.grid_size and 0 <= oy < self.grid_size:
                 self.grid[ox, oy] = -1
         
-        self.agent_positions = {agent: [(6, 2), (8, 2)][i] for i, agent in enumerate(self.agents)}
+        # 【修正】初期位置のランダム化：進入禁止エリア（障害物、座席、カウンター）を除外
+        all_positions = [(r, c) for r in range(self.grid_size) for c in range(self.grid_size)]
+        forbidden = set(self.obstacles) | set(self.seats)
+        if self.counter_pos:
+            forbidden.add(self.counter_pos)
+        
+        available_spaces = [p for p in all_positions if p not in forbidden]
+        start_positions = random.sample(available_spaces, self.n_agents)
+        
+        self.agent_positions = {agent: start_positions[i] for i, agent in enumerate(self.agents)}
         self.agent_directions = {agent: np.random.randint(0, 4) for agent in self.agents}
         self.agent_inventory = {agent: 0 for agent in self.agents}
         
@@ -129,7 +141,6 @@ class RestaurantEnv(AECEnv):
         my_direction = self.agent_directions[agent]
         x, y = my_pos
         
-        # --- 1. グリッド情報の取得 (変更なし) [cite: 118-120] ---
         obs_grid = self.grid.copy().astype(np.float32)
         for other_agent in self.possible_agents:
             if other_agent != agent:
@@ -142,28 +153,31 @@ class RestaurantEnv(AECEnv):
         for order_x, order_y in self.active_orders:
             obs_grid[order_x, order_y] = 4
         
-        # --- 2. ローカル観測：障害物による視界の遮断 (修正)  ---
-        dir_vectors = [(-1, 0), (0, 1), (1, 0), (0, -1)]
-        dx, dy = dir_vectors[my_direction]
+        # 【修正】360度・視界5マス・遮蔽ありのスキャン
+        # 8方向（上、右上、右、右下、下、左下、左、左上）
+        scan_directions = [
+            (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)
+        ]
+        
         local_obs = []
-        view_blocked = False
-        
-        for i in range(1, self.local_obs_size + 1):
-            if view_blocked:
-                local_obs.append(-1.0) # 遮蔽後は壁と同じ値
-                continue
+        for dx, dy in scan_directions:
+            view_blocked = False
+            for i in range(1, self.local_obs_size + 1):
+                if view_blocked:
+                    local_obs.append(-1.0) # 遮蔽後は壁と同じ値
+                    continue
                 
-            tx, ty = x + (dx * i), y + (dy * i)
-            if 0 <= tx < self.grid_size and 0 <= ty < self.grid_size:
-                cell_val = obs_grid[tx, ty]
-                local_obs.append(cell_val)
-                if cell_val == -1.0: # 障害物に当たったらフラグを立てる
+                tx, ty = x + (dx * i), y + (dy * i)
+                if 0 <= tx < self.grid_size and 0 <= ty < self.grid_size:
+                    cell_val = obs_grid[tx, ty]
+                    local_obs.append(cell_val)
+                    if cell_val == -1.0: # 障害物に当たったら遮蔽フラグを立てる
+                        view_blocked = True
+                else:
+                    local_obs.append(-1.0) # 範囲外
                     view_blocked = True
-            else:
-                local_obs.append(-1.0)
-                view_blocked = True
         
-        # --- 3. エージェント自身の状態 (修正: ターゲットベクトルの削除と正規化) [cite: 122-125] ---
+        # 共通観測情報の構築
         standard_obs = np.zeros(len(local_obs) + 10, dtype=np.float32)
         standard_obs[:len(local_obs)] = local_obs
         
@@ -171,7 +185,6 @@ class RestaurantEnv(AECEnv):
         standard_obs[idx:idx+2] = [x / self.grid_size, y / self.grid_size]
         standard_obs[idx+2] = my_direction / 4.0
         
-        # ターゲットベクトルの代わりに、より汎用的な統計情報を正規化して入力 [cite: 124, 125]
         standard_obs[idx+3] = len(self.active_orders) / self.max_seats_obs
         standard_obs[idx+4] = self.served_count[agent] / 20.0
         standard_obs[idx+5] = self.collision_count[agent] / 100.0
@@ -180,7 +193,7 @@ class RestaurantEnv(AECEnv):
         standard_obs[idx+8] = min(self.ready_dishes, 5) / 5.0
         standard_obs[idx+9] = 1.0 if self.ready_dishes > 0 else 0.0
 
-        # --- 4. 全座席の状態：相対座標 (方向ベクトル) 化 (修正) [cite: 126-128] ---
+        # 座席情報の相対座標化
         seat_information = []
         active_customer_seats = [c.seat_position for c in self.customer_manager.customers 
                                  if c.state in ['seated', 'ordered', 'served']]
@@ -188,24 +201,21 @@ class RestaurantEnv(AECEnv):
         for i in range(self.max_seats_obs):
             if i < len(self.seats):
                 sx, sy = self.seats[i]
-                # 絶対座標からエージェント基準の相対座標へ変換 [cite: 126]
-                seat_information.append((sx - x) / self.grid_size) 
+                seat_information.append((sx - x) / self.grid_size)
                 seat_information.append((sy - y) / self.grid_size)
                 seat_information.append(1.0 if (sx, sy) in active_customer_seats else 0.0)
                 seat_information.append(1.0 if (sx, sy) in self.active_orders else 0.0)
             else:
                 seat_information.extend([0.0, 0.0, 0.0, 0.0])
 
-        # --- 5. 結合 ---
         full_obs = np.concatenate([standard_obs, np.array(seat_information, dtype=np.float32)])
         agent_idx = self.possible_agents.index(agent)
-        agent_id_feature = np.zeros(self.n_agents, dtype=np.float32) 
+        agent_id_feature = np.zeros(self.n_agents, dtype=np.float32)
         agent_id_feature[agent_idx] = 1.0
 
         return np.concatenate([full_obs, agent_id_feature])
     
     def _move_agent(self, agent, action):
-        """エージェント移動と衝突処理 [cite: 129-133]"""
         x, y = self.agent_positions[agent]
         direction = self.agent_directions[agent]
         new_x, new_y = x, y
@@ -225,7 +235,7 @@ class RestaurantEnv(AECEnv):
         collision = False
         
         customer_positions = [c.position for c in self.customer_manager.customers 
-                             if c.state in ['seated', 'ordered', 'served']]
+                            if c.state in ['seated', 'ordered', 'served']]
         other_positions = [pos for a, pos in self.agent_positions.items() if a != agent]
         
         if check_collision((new_x, new_y), self.obstacles, 
@@ -240,10 +250,8 @@ class RestaurantEnv(AECEnv):
         return collision
     
     def _process_interaction(self, agent, action):
-        """ピックアップ・配膳・報酬処理 [cite: 134-140]"""
         x, y = self.agent_positions[agent]
         
-        # ピックアップ
         is_near_counter = False
         if self.counter_pos:
             cx, cy = self.counter_pos
@@ -255,7 +263,6 @@ class RestaurantEnv(AECEnv):
             self.agent_inventory[agent] += 1
             self.rewards[agent] += self.reward_params['pickup']
         
-        # 配膳
         if self.agent_inventory[agent] > 0:
             for order_pos in self.active_orders[:]:
                 adjacent = get_adjacent_positions(order_pos)
@@ -271,13 +278,11 @@ class RestaurantEnv(AECEnv):
                             customer.wait_time = 0
                     break
         
-        # ペナルティ
         if action == 0:
             self.rewards[agent] += self.reward_params['step_cost']
         if len(self.active_orders) > 3:
             self.rewards[agent] += self.reward_params['wait_penalty']
         
-        # 協調ボーナス
         current_reward = self.rewards[agent]
         if current_reward >= self.reward_params['coop_bonus_threshold']:
             for other_agent in self.possible_agents:
