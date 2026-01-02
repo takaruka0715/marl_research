@@ -2,10 +2,14 @@ import torch
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.patches import Rectangle, Circle, Wedge
+import numpy as np
 
-def create_restaurant_gif(env, agents, filename='restaurant_service_cooking.gif'):
-    """環境の遷移を GIF で保存"""
-    env.reset(seed=42)
+def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif'):
+    """環境の遷移を GIF で保存 (ParallelEnv対応版)"""
+    
+    # 環境リセット (ParallelEnvは (obs, info) を返す)
+    observations, infos = env.reset(seed=42)
+    
     fig, ax = plt.subplots(figsize=(8, 8))
     
     def draw_frame(frame_data):
@@ -43,9 +47,12 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_cooking.gif'
         
         # エージェント
         agent_colors = ['red', 'blue']
-        dir_angles = [270, 0, 90, 180]
+        dir_angles = [270, 0, 90, 180] # 0:Up, 1:Right, 2:Down, 3:Left (Assuming logic)
         
         for idx, agent in enumerate(env.possible_agents):
+            if agent not in frame_data['agent_positions']:
+                continue
+                
             pos = frame_data['agent_positions'][agent]
             d = frame_data['agent_directions'][agent]
             inv = frame_data['agent_inventory'][agent]
@@ -58,54 +65,53 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_cooking.gif'
             
             angle = dir_angles[d]
             ax.add_patch(Wedge((pos[1], pos[0]), 0.5, angle-30, angle+30, 
-                              alpha=0.4, color='black'))
+                               alpha=0.4, color='black'))
         
         ax.invert_yaxis()
         ax.set_title(f'Step: {len(env.history)} | Food: {frame_data["ready_dishes"]}')
     
-    # エージェント行動
-    for step in range(400):
-        agent_name = env.agent_selection
-        if env.truncations.get(agent_name, False):
-            env.step(None)
-            continue
+    # --- シミュレーション実行 (ParallelEnv) ---
+    max_steps = 400
+    for step in range(max_steps):
+        # PettingZoo ParallelEnv: エージェントがいなくなったら終了
+        if not env.agents:
+            break
+            
+        actions = {}
         
-        state = env.observe(agent_name)
-
+        # アルゴリズムに応じた行動選択
         with torch.no_grad():
-            # VDNモードかどうかで分岐
             if 'qmix' in agents:
+                # QMIX: エージェント管理クラスが select_actions を持つ想定
                 qmix_agent = agents['qmix']
-                agent_idx = int(agent_name.split('_')[1])
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(qmix_agent.device)
-                q_values = qmix_agent.q_network.get_local_q(agent_idx, state_tensor)
-                action = q_values.argmax().item()
+                # observations は {agent_id: obs} なのでそのまま渡す
+                actions = qmix_agent.select_actions(observations)
+                
             elif 'vdn' in agents:
-                # VDNの場合は、1つのエージェントインスタンスを共有して使う
+                # VDN: エージェント管理クラスが select_actions を持つ想定
                 vdn_agent = agents['vdn']
-                device = vdn_agent.device
-                
-                # エージェント名 (agent_0) からインデックス (0) を取得
-                agent_idx = int(agent_name.split('_')[1])
-                
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
-                
-                # VDNAgentが持つ「個別のローカルQネットワーク」を使って行動決定
-                # agents/vdn.py で定義された local_q_networks リストにアクセス
-                q_values = vdn_agent.q_network.get_local_q(agent_idx, state_tensor)
-                action = q_values.argmax().item()
+                actions = vdn_agent.select_actions(observations)
                 
             else:
-                # 独立DQN (Independent DQN) の場合
-                current_agent = agents[agent_name]
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(current_agent.device)
-                action = current_agent.q_network(state_tensor).argmax().item()
-
-        env.step(action)
+                # Independent DQN: 各エージェントごとに個別に select_action
+                for agent_id in env.agents:
+                    if agent_id in observations:
+                        agent_obs = observations[agent_id]
+                        dqn_agent = agents[agent_id]
+                        
+                        # DQNエージェントは単体の観測を受け取る
+                        action = dqn_agent.select_action(agent_obs)
+                        actions[agent_id] = action
+                        
+        # 環境を1ステップ進める (同時更新)
+        observations, rewards, terminations, truncations, infos = env.step(actions)
         
-        if all(env.truncations.get(a, False) for a in env.possible_agents):
+        # 全員終了したらループを抜ける
+        if not env.agents:
             break
-    
+            
+    # アニメーション生成
+    # env.history にはステップごとのスナップショットが保存されている
     ani = animation.FuncAnimation(fig, draw_frame, frames=env.history[::2], interval=150)
     ani.save(filename, writer='pillow', fps=6)
     print(f"Saved GIF to {filename}")
