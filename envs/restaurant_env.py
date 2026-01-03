@@ -162,11 +162,15 @@ class RestaurantEnv(ParallelEnv):
         
         self.agent_positions = {agent: start_positions[i] for i, agent in enumerate(self.agents)}
         self.agent_directions = {agent: np.random.randint(0, 4) for agent in self.agents}
-        self.agent_inventory = {agent: 0 for agent in self.agents}
+        
+        # 【修正】在庫管理をリストに変更（各エージェントが持っている料理オブジェクトのリスト）
+        self.agent_inventory = {agent: [] for agent in self.agents}
         
         # 各種カウンターリセット
         self.kitchen_queue = []
-        self.ready_dishes = 0
+        # 【修正】カウンターにある料理もリストに変更
+        self.ready_dishes = []
+        
         self.active_orders = []
         
         # 【追加】待ち時間記録用リスト
@@ -186,8 +190,8 @@ class RestaurantEnv(ParallelEnv):
             'agent_directions': self.agent_directions.copy(),
             'customers': [c.__dict__.copy() for c in self.customer_manager.customers],
             'active_orders': self.active_orders.copy(),
-            'agent_inventory': self.agent_inventory.copy(),
-            'ready_dishes': self.ready_dishes
+            'agent_inventory': self.agent_inventory.copy(), # リストのコピー
+            'ready_dishes': list(self.ready_dishes) # リストのコピー
         }]
         
         observations = {agent: self.observe(agent) for agent in self.agents}
@@ -228,7 +232,8 @@ class RestaurantEnv(ParallelEnv):
             item['time_left'] -= 1
             if item['time_left'] <= 0:
                 self.kitchen_queue.remove(item)
-                self.ready_dishes += 1
+                # 【修正】数値ではなく料理オブジェクト(target_seat含む)をカウンターへ移動
+                self.ready_dishes.append(item)
 
         # 4. 共通ペナルティ (待ち時間など)
         if len(self.active_orders) > 3:
@@ -257,7 +262,7 @@ class RestaurantEnv(ParallelEnv):
                 'customers': [c.__dict__.copy() for c in self.customer_manager.customers],
                 'active_orders': self.active_orders.copy(),
                 'agent_inventory': self.agent_inventory.copy(),
-                'ready_dishes': self.ready_dishes
+                'ready_dishes': list(self.ready_dishes)
             })
 
         return observations, rewards, terminations, truncations, infos
@@ -375,31 +380,44 @@ class RestaurantEnv(ParallelEnv):
             if abs(x - cx) + abs(y - cy) <= 1:
                 is_near_counter = True
         
-        # ピックアップ
-        if is_near_counter and self.ready_dishes > 0 and self.agent_inventory[agent] < 4:
-            self.ready_dishes -= 1
-            self.agent_inventory[agent] += 1
+        # --- 【修正】ピックアップ処理 ---
+        # カウンターに料理があり、インベントリに空きがある場合
+        # ready_dishes はリストになったため len() で判定
+        if is_near_counter and len(self.ready_dishes) > 0 and len(self.agent_inventory[agent]) < 4:
+            # FIFOで先頭の料理を取り出す
+            dish = self.ready_dishes.pop(0)
+            self.agent_inventory[agent].append(dish)
             rewards[agent] += self.reward_params['pickup']
         
-        # 配膳
-        if self.agent_inventory[agent] > 0:
+        # --- 【修正】配膳処理 ---
+        # インベントリに料理がある場合
+        if len(self.agent_inventory[agent]) > 0:
             for order_pos in self.active_orders[:]:
                 adjacent = get_adjacent_positions(order_pos)
                 if (x, y) in adjacent:
-                    self.agent_inventory[agent] -= 1
-                    rewards[agent] += self.reward_params['delivery']
-                    self.served_count[agent] += 1
-                    if order_pos in self.active_orders:
-                        self.active_orders.remove(order_pos)
+                    # エージェントが持っている料理の中に、この座席 (order_pos) 宛のものがあるか確認
+                    target_dish = None
+                    for dish in self.agent_inventory[agent]:
+                        if dish.get('target_seat') == order_pos:
+                            target_dish = dish
+                            break
                     
-                    for customer in self.customer_manager.customers:
-                        if customer.seat_position == order_pos and customer.state == 'ordered':
-                            # 【追加】配膳完了時の待ち時間を記録
-                            self.completed_wait_times.append(customer.wait_time)
-                            
-                            customer.state = 'served'
-                            customer.wait_time = 0
-                    break
+                    # 正しい料理を持っていれば配膳成功
+                    if target_dish:
+                        self.agent_inventory[agent].remove(target_dish)
+                        rewards[agent] += self.reward_params['delivery']
+                        self.served_count[agent] += 1
+                        if order_pos in self.active_orders:
+                            self.active_orders.remove(order_pos)
+                        
+                        for customer in self.customer_manager.customers:
+                            if customer.seat_position == order_pos and customer.state == 'ordered':
+                                # 【追加】配膳完了時の待ち時間を記録
+                                self.completed_wait_times.append(customer.wait_time)
+                                
+                                customer.state = 'served'
+                                customer.wait_time = 0
+                        break # 1ステップで1回の配膳のみ
         
         # 協力ボーナス
         current_reward = rewards[agent]
@@ -452,16 +470,17 @@ class RestaurantEnv(ParallelEnv):
         standard_obs = np.zeros(len(local_obs) + 10, dtype=np.float32)
         standard_obs[:len(local_obs)] = local_obs
         
+        # 【修正】インベントリやカウンターの状態はリストの長さを使用するように変更
         idx = len(local_obs)
         standard_obs[idx:idx+2] = [x / self.grid_size, y / self.grid_size]
         standard_obs[idx+2] = my_direction / 4.0
         standard_obs[idx+3] = len(self.active_orders) / self.max_seats_obs
         standard_obs[idx+4] = self.served_count[agent] / 20.0
         standard_obs[idx+5] = self.collision_count[agent] / 100.0
-        standard_obs[idx+6] = self.agent_inventory[agent] / 4.0
-        standard_obs[idx+7] = 1.0 if self.agent_inventory[agent] < 4 else 0.0
-        standard_obs[idx+8] = min(self.ready_dishes, 5) / 5.0
-        standard_obs[idx+9] = 1.0 if self.ready_dishes > 0 else 0.0
+        standard_obs[idx+6] = len(self.agent_inventory[agent]) / 4.0
+        standard_obs[idx+7] = 1.0 if len(self.agent_inventory[agent]) < 4 else 0.0
+        standard_obs[idx+8] = min(len(self.ready_dishes), 5) / 5.0
+        standard_obs[idx+9] = 1.0 if len(self.ready_dishes) > 0 else 0.0
 
         seat_information = []
         active_customer_seats = [c.seat_position for c in self.customer_manager.customers 

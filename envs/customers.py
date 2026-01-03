@@ -54,7 +54,11 @@ class CustomerManager:
                     customer.has_ordered = True
                     if customer.seat_position not in active_orders:
                         active_orders.append(customer.seat_position)
-                        kitchen_items.append({'time_left': 5})
+                        # 【修正】座席情報を料理データに付与する
+                        kitchen_items.append({
+                            'time_left': 5,
+                            'target_seat': customer.seat_position
+                        })
             elif customer.state == 'served':
                 customer.wait_time += 1
                 if customer.wait_time >= 15:

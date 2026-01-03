@@ -84,7 +84,7 @@ def main():
         env = RestaurantEnv(
             layout_type='complex', 
             enable_customers=True, 
-            customer_spawn_interval=30,
+            customer_spawn_interval=20,
             local_obs_size=5,
             config=config
         )
