@@ -4,8 +4,6 @@ import matplotlib.animation as animation
 from matplotlib.patches import Rectangle, Circle, Wedge
 import numpy as np
 
-# 注意: ここに 'from .customers import ...' などは不要です
-
 def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif'):
     """環境の遷移を GIF で保存 (ParallelEnv対応版)"""
     
@@ -49,7 +47,7 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif
         
         # エージェント
         agent_colors = ['red', 'blue']
-        dir_angles = [270, 0, 90, 180] # 0:Up, 1:Right, 2:Down, 3:Left
+        dir_angles = [270, 0, 90, 180] # 0:Up, 1:Right, 2:Down, 3:Left (Assuming logic)
         
         for idx, agent in enumerate(env.possible_agents):
             if agent not in frame_data['agent_positions']:
@@ -57,30 +55,41 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif
 
             pos = frame_data['agent_positions'][agent]
             d = frame_data['agent_directions'][agent]
-            inv = frame_data['agent_inventory'][agent]
             
-            # エージェント本体
+            # --- 【修正】インベントリ表示の型対応 ---
+            # 環境側の変更で inventory が list になった場合と int の場合の両方に対応
+            raw_inv = frame_data['agent_inventory'][agent]
+            if isinstance(raw_inv, list):
+                inv_count = len(raw_inv)
+            else:
+                inv_count = int(raw_inv)
+            # ----------------------------------------
+            
             ax.add_patch(Circle((pos[1], pos[0]), 0.35, facecolor=agent_colors[idx]))
             
-            # 在庫数の表示
-            if inv > 0:
-                ax.text(pos[1], pos[0], str(inv), color='white', ha='center', 
+            if inv_count > 0:
+                ax.text(pos[1], pos[0], str(inv_count), color='white', ha='center', 
                        va='center', fontweight='bold')
             
-            # 向きの表示
             angle = dir_angles[d]
             ax.add_patch(Wedge((pos[1], pos[0]), 0.5, angle-30, angle+30, 
-                               alpha=0.4, color='black'))
+                alpha=0.4, color='black'))
         
         ax.invert_yaxis()
-        # タイトルに情報表示
-        food_count = frame_data.get("ready_dishes", 0)
-        step_count = len(env.history)
-        ax.set_title(f'Step: {step_count} | Food: {food_count}')
+        
+        # カウンター上の料理数を取得（リストか数値か判定）
+        ready_dishes_data = frame_data.get("ready_dishes", [])
+        if isinstance(ready_dishes_data, list):
+            ready_count = len(ready_dishes_data)
+        else:
+            ready_count = int(ready_dishes_data)
+
+        ax.set_title(f'Step: {len(env.history)} | Food: {ready_count}')
     
     # --- シミュレーション実行 (ParallelEnv) ---
     max_steps = 400
     for step in range(max_steps):
+        # PettingZoo ParallelEnv: エージェントがいなくなったら終了
         if not env.agents:
             break
             
@@ -89,34 +98,37 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif
         # アルゴリズムに応じた行動選択
         with torch.no_grad():
             if 'qmix' in agents:
+                # QMIX: エージェント管理クラスが select_actions を持つ想定
                 qmix_agent = agents['qmix']
+                # observations は {agent_id: obs} なのでそのまま渡す
                 actions = qmix_agent.select_actions(observations)
                 
             elif 'vdn' in agents:
+                # VDN: エージェント管理クラスが select_actions を持つ想定
                 vdn_agent = agents['vdn']
                 actions = vdn_agent.select_actions(observations)
-                
+                 
             else:
-                # Independent DQN
+                # Independent DQN: 各エージェントごとに個別に select_action
                 for agent_id in env.agents:
                     if agent_id in observations:
                         agent_obs = observations[agent_id]
                         dqn_agent = agents[agent_id]
+                        
+                        # DQNエージェントは単体の観測を受け取る
                         action = dqn_agent.select_action(agent_obs)
                         actions[agent_id] = action
                         
-        # 環境を1ステップ進める
+        # 環境を1ステップ進める (同時更新)
         observations, rewards, terminations, truncations, infos = env.step(actions)
         
+        # 全員終了したらループを抜ける
         if not env.agents:
             break
             
     # アニメーション生成
-    if len(env.history) > 0:
-        ani = animation.FuncAnimation(fig, draw_frame, frames=env.history[::2], interval=150)
-        ani.save(filename, writer='pillow', fps=6)
-        print(f"Saved GIF to {filename}")
-    else:
-        print("Warning: No history found to generate GIF.")
-    
+    # env.history にはステップごとのスナップショットが保存されている
+    ani = animation.FuncAnimation(fig, draw_frame, frames=env.history[::2], interval=150)
+    ani.save(filename, writer='pillow', fps=6)
+    print(f"Saved GIF to {filename}")
     plt.close()

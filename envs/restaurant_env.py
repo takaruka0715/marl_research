@@ -28,7 +28,14 @@ class RestaurantEnv(ParallelEnv):
         self.n_agents = len(self.possible_agents)
         
         self.max_seats_obs = 20 
-        self.seat_obs_dim = self.max_seats_obs * 4
+        
+        # 【修正】座席ごとの観測次元を 6 -> 5 に最適化
+        # 1.相対X
+        # 2.相対Y
+        # 3.注文あり (客がいるか情報はこれに含まれるとみなす)
+        # 4.自分が所持している料理の宛先か
+        # 5.カウンターにこの座席宛の料理があるか
+        self.seat_obs_dim = self.max_seats_obs * 5
         
         self.num_view_directions = 8 
         self.view_dim = self.num_view_directions * self.local_obs_size 
@@ -61,7 +68,7 @@ class RestaurantEnv(ParallelEnv):
             for agent in self.possible_agents
         }
         self.action_spaces = {
-            agent: spaces.Discrete(5) # 0-3: Move, 4: Wait (No-op) - 待機アクションを明示的に許容
+            agent: spaces.Discrete(5) # 0-3: Move, 4: Wait (No-op)
             for agent in self.possible_agents
         }
         
@@ -144,54 +151,43 @@ class RestaurantEnv(ParallelEnv):
                 self.grid[ox, oy] = -1
         
         # エージェント初期配置
-        # --- 単純な空きマスではなく、到達可能な空きマスのみを抽出 ---
         forbidden = set(self.obstacles) | set(self.seats)
         if self.counter_pos:
             forbidden.add(self.counter_pos)
         
-        # BFSを使って到達可能な場所だけをリストアップ
         available_spaces = self._get_connected_free_spaces(forbidden)
 
-        # 万が一マップ生成の都合で配置場所が足りない場合のフォールバック（全空きマスを使用）
         if len(available_spaces) < self.n_agents:
             all_positions = [(r, c) for r in range(self.grid_size) for c in range(self.grid_size)]
             available_spaces = [p for p in all_positions if p not in forbidden]
         
         start_positions = random.sample(available_spaces, self.n_agents)
-        # -----------------------------------------------------------
         
         self.agent_positions = {agent: start_positions[i] for i, agent in enumerate(self.agents)}
         self.agent_directions = {agent: np.random.randint(0, 4) for agent in self.agents}
         
-        # 【修正】在庫管理をリストに変更（各エージェントが持っている料理オブジェクトのリスト）
         self.agent_inventory = {agent: [] for agent in self.agents}
         
-        # 各種カウンターリセット
         self.kitchen_queue = []
-        # 【修正】カウンターにある料理もリストに変更
         self.ready_dishes = []
         
         self.active_orders = []
-        
-        # 【追加】待ち時間記録用リスト
         self.completed_wait_times = []
         
         self.served_count = {agent: 0 for agent in self.agents}
         self.collision_count = {agent: 0 for agent in self.agents}
         
-        # 顧客マネージャーリセット
         self.customer_manager.customers = []
         self.customer_manager.customer_counter = 0
         self.customer_manager.steps_since_last_spawn = 0
         
-        # 履歴
         self.history = [{
             'agent_positions': self.agent_positions.copy(),
             'agent_directions': self.agent_directions.copy(),
             'customers': [c.__dict__.copy() for c in self.customer_manager.customers],
             'active_orders': self.active_orders.copy(),
-            'agent_inventory': self.agent_inventory.copy(), # リストのコピー
-            'ready_dishes': list(self.ready_dishes) # リストのコピー
+            'agent_inventory': self.agent_inventory.copy(),
+            'ready_dishes': list(self.ready_dishes)
         }]
         
         observations = {agent: self.observe(agent) for agent in self.agents}
@@ -200,24 +196,20 @@ class RestaurantEnv(ParallelEnv):
         return observations, infos
 
     def step(self, actions):
-        """
-        ParallelEnv の step
-        actions: {agent_id: action_value}
-        """
         rewards = {agent: 0.0 for agent in self.agents}
         terminations = {agent: False for agent in self.agents}
         truncations = {agent: False for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
 
-        # 1. 移動ロジック (同時解決)
+        # 1. 移動ロジック
         self._move_agents_simultaneously(actions, rewards)
 
-        # 2. インタラクション処理 (ピックアップ/配膳)
+        # 2. インタラクション処理
         for agent in self.agents:
             if agent in actions:
                 self._process_interaction(agent, actions[agent], rewards)
 
-        # 3. 顧客生成と更新 (ステップごとの処理)
+        # 3. 顧客生成と更新
         self.customer_manager.steps_since_last_spawn += 1
         if self.customer_manager.steps_since_last_spawn >= self.customer_manager.spawn_interval:
             self.customer_manager.spawn_customer(self.entrance_pos, self.seats)
@@ -232,10 +224,9 @@ class RestaurantEnv(ParallelEnv):
             item['time_left'] -= 1
             if item['time_left'] <= 0:
                 self.kitchen_queue.remove(item)
-                # 【修正】数値ではなく料理オブジェクト(target_seat含む)をカウンターへ移動
                 self.ready_dishes.append(item)
 
-        # 4. 共通ペナルティ (待ち時間など)
+        # 4. 共通ペナルティ
         if len(self.active_orders) > 3:
              for agent in self.agents:
                  rewards[agent] += self.reward_params['wait_penalty']
@@ -244,18 +235,17 @@ class RestaurantEnv(ParallelEnv):
         self.num_moves += 1
         if self.num_moves >= self.max_steps:
             truncations = {agent: True for agent in self.agents}
-            self.agents = [] # エージェントリストを空にして終了を示す
+            self.agents = []
 
         # 6. 観測生成
         observations = {}
         if self.agents:
             observations = {agent: self.observe(agent) for agent in self.agents}
         else:
-             # 終了時も最後の観測を返さないと学習ループでエラーになることがあるため、possible_agentsを使って返す
              observations = {agent: self.observe(agent) for agent in self.possible_agents}
 
         # 履歴保存
-        if self.agents: # まだエピソードが続いている場合
+        if self.agents:
              self.history.append({
                 'agent_positions': self.agent_positions.copy(),
                 'agent_directions': self.agent_directions.copy(),
@@ -268,16 +258,10 @@ class RestaurantEnv(ParallelEnv):
         return observations, rewards, terminations, truncations, infos
 
     def _move_agents_simultaneously(self, actions, rewards):
-        """
-        全エージェントの移動を同時に解決し、衝突やスワップを防ぐ
-        """
         intended_positions = {}
         intended_directions = {}
-        
-        # 方向ベクトル
         dir_vectors = [(-1, 0), (0, 1), (1, 0), (0, -1)]
 
-        # 1. 各エージェントの「移動意図」を計算
         for agent in self.agents:
             if agent not in actions:
                 intended_positions[agent] = self.agent_positions[agent]
@@ -291,68 +275,53 @@ class RestaurantEnv(ParallelEnv):
             next_pos = curr_pos
             next_dir = curr_dir
             
-            # 行動による座標計算
             if action == 0: # Move Forward
                 dx, dy = dir_vectors[curr_dir]
-                # マップ範囲チェック
                 temp_x = max(0, min(self.grid_size - 1, curr_pos[0] + dx))
                 temp_y = max(0, min(self.grid_size - 1, curr_pos[1] + dy))
                 next_pos = (temp_x, temp_y)
-                rewards[agent] += self.reward_params['step_cost'] # 移動コスト
+                rewards[agent] += self.reward_params['step_cost']
                 
             elif action == 1: # Turn Right
                 next_dir = (curr_dir + 1) % 4
             elif action == 2: # Turn Left
                 next_dir = (curr_dir - 1) % 4
-            # それ以外の入力(3, 4)は「移動しない(Stay)」として扱います。
 
             intended_positions[agent] = next_pos
             intended_directions[agent] = next_dir
 
-        # 2. 衝突判定と解決
-        # 移動確定フラグ（Trueなら移動成功、Falseなら元の位置に戻す）
         move_success = {agent: True for agent in self.agents}
 
-        # A. 静的障害物 (壁・テーブル・椅子・客) との衝突チェック
         customer_positions = [c.position for c in self.customer_manager.customers 
                               if c.state in ['seated', 'ordered', 'served']]
         
         for agent in self.agents:
-            # 既にその場に留まる予定ならスキップ
             if intended_positions[agent] == self.agent_positions[agent]:
                 continue
             
-            # 障害物判定
             pos = intended_positions[agent]
             if (pos in self.obstacles) or (pos in self.seats) or (pos in customer_positions):
                 move_success[agent] = False
                 rewards[agent] += self.reward_params['collision']
                 self.collision_count[agent] += 1
 
-        # B. エージェント間衝突 (同一地点への進入)
-        # 目的地ごとのエージェントリストを作成
         dest_counts = {}
         for agent in self.agents:
-            if not move_success[agent]: continue # 既に失敗しているエージェントは無視（元の位置にいる）
+            if not move_success[agent]: continue
             dest = intended_positions[agent]
             if dest not in dest_counts: dest_counts[dest] = []
             dest_counts[dest].append(agent)
         
         for dest, agents_at_dest in dest_counts.items():
             if len(agents_at_dest) > 1:
-                # 競合発生：全員移動キャンセル（公平なペナルティ）
                 for agent in agents_at_dest:
                     move_success[agent] = False
                     rewards[agent] += self.reward_params['collision']
                     self.collision_count[agent] += 1
         
-        # C. スワップ衝突 (AがBへ、BがAへ移動)
-        # これを防がないとすれ違ってしまう
         for i, agent_a in enumerate(self.agents):
             for agent_b in self.agents[i+1:]:
-                # 両方とも移動成功判定が残っている場合のみチェック
                 if move_success[agent_a] and move_success[agent_b]:
-                    # Aの目的地がBの現在地 かつ Bの目的地がAの現在地
                     if (intended_positions[agent_a] == self.agent_positions[agent_b] and 
                         intended_positions[agent_b] == self.agent_positions[agent_a]):
                         
@@ -363,13 +332,10 @@ class RestaurantEnv(ParallelEnv):
                         self.collision_count[agent_a] += 1
                         self.collision_count[agent_b] += 1
 
-        # 3. 位置の確定更新
         for agent in self.agents:
             if move_success[agent]:
                 self.agent_positions[agent] = intended_positions[agent]
                 self.agent_directions[agent] = intended_directions[agent]
-            else:
-                pass 
 
     def _process_interaction(self, agent, action, rewards):
         x, y = self.agent_positions[agent]
@@ -380,29 +346,23 @@ class RestaurantEnv(ParallelEnv):
             if abs(x - cx) + abs(y - cy) <= 1:
                 is_near_counter = True
         
-        # --- 【修正】ピックアップ処理 ---
-        # カウンターに料理があり、インベントリに空きがある場合
-        # ready_dishes はリストになったため len() で判定
+        # --- ピックアップ処理 ---
         if is_near_counter and len(self.ready_dishes) > 0 and len(self.agent_inventory[agent]) < 4:
-            # FIFOで先頭の料理を取り出す
             dish = self.ready_dishes.pop(0)
             self.agent_inventory[agent].append(dish)
             rewards[agent] += self.reward_params['pickup']
         
-        # --- 【修正】配膳処理 ---
-        # インベントリに料理がある場合
+        # --- 配膳処理 ---
         if len(self.agent_inventory[agent]) > 0:
             for order_pos in self.active_orders[:]:
                 adjacent = get_adjacent_positions(order_pos)
                 if (x, y) in adjacent:
-                    # エージェントが持っている料理の中に、この座席 (order_pos) 宛のものがあるか確認
                     target_dish = None
                     for dish in self.agent_inventory[agent]:
                         if dish.get('target_seat') == order_pos:
                             target_dish = dish
                             break
                     
-                    # 正しい料理を持っていれば配膳成功
                     if target_dish:
                         self.agent_inventory[agent].remove(target_dish)
                         rewards[agent] += self.reward_params['delivery']
@@ -412,14 +372,11 @@ class RestaurantEnv(ParallelEnv):
                         
                         for customer in self.customer_manager.customers:
                             if customer.seat_position == order_pos and customer.state == 'ordered':
-                                # 【追加】配膳完了時の待ち時間を記録
                                 self.completed_wait_times.append(customer.wait_time)
-                                
                                 customer.state = 'served'
                                 customer.wait_time = 0
-                        break # 1ステップで1回の配膳のみ
+                        break
         
-        # 協力ボーナス
         current_reward = rewards[agent]
         if current_reward >= self.reward_params['coop_bonus_threshold']:
             for other_agent in self.agents:
@@ -470,7 +427,6 @@ class RestaurantEnv(ParallelEnv):
         standard_obs = np.zeros(len(local_obs) + 10, dtype=np.float32)
         standard_obs[:len(local_obs)] = local_obs
         
-        # 【修正】インベントリやカウンターの状態はリストの長さを使用するように変更
         idx = len(local_obs)
         standard_obs[idx:idx+2] = [x / self.grid_size, y / self.grid_size]
         standard_obs[idx+2] = my_direction / 4.0
@@ -485,16 +441,22 @@ class RestaurantEnv(ParallelEnv):
         seat_information = []
         active_customer_seats = [c.seat_position for c in self.customer_manager.customers 
                                  if c.state in ['seated', 'ordered', 'served']]
+        
+        my_target_seats = [d['target_seat'] for d in self.agent_inventory[agent]]
+        counter_target_seats = [d['target_seat'] for d in self.ready_dishes]
 
         for i in range(self.max_seats_obs):
             if i < len(self.seats):
                 sx, sy = self.seats[i]
                 seat_information.append((sx - x) / self.grid_size)
                 seat_information.append((sy - y) / self.grid_size)
-                seat_information.append(1.0 if (sx, sy) in active_customer_seats else 0.0)
+                # "客がいるか" は削除し、"注文があるか"に集約
                 seat_information.append(1.0 if (sx, sy) in self.active_orders else 0.0)
+                seat_information.append(1.0 if (sx, sy) in my_target_seats else 0.0)
+                seat_information.append(1.0 if (sx, sy) in counter_target_seats else 0.0)
             else:
-                seat_information.extend([0.0, 0.0, 0.0, 0.0])
+                # パディングも5次元に変更
+                seat_information.extend([0.0, 0.0, 0.0, 0.0, 0.0])
 
         full_obs = np.concatenate([standard_obs, np.array(seat_information, dtype=np.float32)])
         agent_idx = self.possible_agents.index(agent)
