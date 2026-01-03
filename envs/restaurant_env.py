@@ -47,14 +47,21 @@ class RestaurantEnv(ParallelEnv):
                 'collision': config.collision_penalty,
                 'step_cost': config.step_cost,
                 'wait_penalty': config.wait_penalty,
-                'coop_bonus_threshold': config.coop_bonus_threshold
+                'coop_bonus_threshold': config.coop_bonus_threshold,
+                
+                # [cite_start]★追加: 設定ファイルから動的ペナルティ用パラメータを読み込む [cite: 274, 275]
+                'max_wait_limit': config.max_wait_limit,
+                'wait_penalty_scale': config.wait_penalty_scale
             }
             self.max_steps = config.max_steps
             self.coop_factor = config.coop_factor
         else:
             self.reward_params = {
                 'delivery': 100.0, 'pickup': 50.0, 'collision': -10.0,
-                'step_cost': -0.1, 'wait_penalty': -0.5, 'coop_bonus_threshold': 20.0
+                'step_cost': -0.1, 'wait_penalty': -0.5, 'coop_bonus_threshold': 20.0,
+                # ★追加: デフォルト値
+                'max_wait_limit': 50.0,
+                'wait_penalty_scale': 0.1
             }
             self.max_steps = 500
             self.coop_factor = coop_factor
@@ -226,10 +233,22 @@ class RestaurantEnv(ParallelEnv):
                 self.kitchen_queue.remove(item)
                 self.ready_dishes.append(item)
 
-        # 4. 共通ペナルティ
-        if len(self.active_orders) > 3:
-             for agent in self.agents:
-                 rewards[agent] += self.reward_params['wait_penalty']
+        # 4. 共通ペナルティ (★修正: 動的待機ペナルティへの変更)
+        # 設定ファイルから値を参照
+        max_wait = self.reward_params.get('max_wait_limit', 50.0)
+        scale = self.reward_params.get('wait_penalty_scale', 0.1)
+
+        total_wait_penalty = 0.0
+        
+        for c in self.customer_manager.customers:
+            if c.state == 'ordered':
+                # 動的ペナルティ計算: 待ち時間が長いほど重くなる
+                urgency = (c.wait_time / max_wait) ** 2
+                total_wait_penalty -= urgency * scale
+
+        # 全エージェントにペナルティ適用
+        for agent in self.agents:
+            rewards[agent] += total_wait_penalty
 
         # 5. ステップ数カウントと終了判定
         self.num_moves += 1
