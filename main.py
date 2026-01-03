@@ -1,88 +1,150 @@
+# main.py の全書き換え案
+
 import torch
+import argparse
+import os
 from confs import Config, AgentConfig, TrainingConfig
 from training import Trainer
+from envs import RestaurantEnv
+from agents import DQNAgent, VDNAgent, QMIXAgent
 from visualization import plot_learning_curves, create_restaurant_gif
 
-def main(use_vdn=False, use_qmix=False, use_tar2=False):
-    """
-    メイン実行関数 (ParallelEnv対応)
-    Args:
-        use_vdn (bool): VDNを使用するか
-        use_qmix (bool): QMIXを使用するか
-        use_tar2 (bool): TAR2を使用するか
-    """
-    algo_name = "Independent DQN"
-    if use_qmix: algo_name = "QMIX"
-    elif use_vdn: algo_name = "VDN"
+def get_args():
+    parser = argparse.ArgumentParser(description="MARL Restaurant Service")
+    parser.add_argument('--train', action='store_true', help='Run training mode')
+    parser.add_argument('--eval', action='store_true', help='Run evaluation/visualization mode only')
+    parser.add_argument('--use_vdn', action='store_true', help='Use VDN architecture')
+    parser.add_argument('--use_qmix', action='store_true', help='Use QMIX architecture')
+    parser.add_argument('--use_tar2', action='store_true', help='Use TAR2 reward shaping')
+    parser.add_argument('--model_dir', type=str, default='models', help='Directory to save/load models')
+    return parser.parse_args()
 
-    print(f"Algorithm: {algo_name}")
-    print(f"Reward Shaping (TAR2): {'ON' if use_tar2 else 'OFF'}")
+def main():
+    args = get_args()
     
-    # 1. 基本設定の読み込み
-    config = Config()
-    
-    # 2. TAR2を使用する場合の設定上書き
-    # 途中報酬をカットして、スパース報酬（結果重視）の設定にする
-    if use_tar2:
-        print(">> TAR2 mode detected: Overwriting intermediate rewards to 0.0 (Sparse Reward Setting)")
-        config.pickup_reward = 10.0      # 最小限のピックアップ報酬
-        config.delivery_reward = 400.0   # 大きな達成報酬
-        config.collision_penalty = -10.0 
-        config.step_cost = -0.01         # 移動コストは小さく
-        config.wait_penalty = 0.0
+    # アルゴリズム名の決定（ファイル名サフィックス用）
+    if args.use_qmix:
+        mode_suffix = "qmix" + ("_tar2" if args.use_tar2 else "")
+    elif args.use_vdn:
+        mode_suffix = "vdn" + ("_tar2" if args.use_tar2 else "")
     else:
-        print(">> Standard mode: Using dense rewards defined in config.py")
-
-    # 3. エージェントと学習設定の初期化
-    agent_config = AgentConfig(use_vdn=use_vdn, use_tar2=use_tar2)
-    training_config = TrainingConfig(agent_config=agent_config)
-    
-    # 4. トレーナーの初期化
-    # ParallelEnv対応版のTrainerを呼び出します
-    trainer = Trainer(
-        num_episodes=training_config.num_episodes,
-        use_shared_replay=training_config.use_shared_replay,
-        use_vdn=use_vdn,
-        use_qmix=use_qmix,
-        use_tar2=use_tar2,
-        config=config
-    )
-    
-    # 5. 学習実行
-    # Trainer内部で ParallelEnv がインスタンス化され、学習が進みます
-    agents, episode_rewards, avg_rewards, served_stats, collision_rates, avg_wait_times, final_env = trainer.train()
-    
-    # 6. 出力ファイル名の決定ロジック
-    if use_qmix:
-        mode_suffix = "qmix" + ("_tar2" if use_tar2 else "")
-    elif use_vdn:
-        if use_tar2:
-            mode_suffix = "vdn_tar2"
-        else:
-            mode_suffix = "vdn"
-    else:
-        # VDN/QMIXを使っていない (Independent DQN)
         mode_suffix = "dqn"
 
-    plot_filename = f"learning_curves_{mode_suffix}.png"
-    gif_filename = f"restaurant_{mode_suffix}.gif"
+    # --- Config設定 ---
+    config = Config()
+    if args.use_tar2:
+        print(">> TAR2 mode: Overwriting rewards for sparse setting")
+        config.pickup_reward = 10.0
+        config.delivery_reward = 400.0
+        config.collision_penalty = -10.0
+        config.step_cost = -0.01
+        config.wait_penalty = 0.0
 
-    # 7. 結果の可視化と保存
-    print(f"\nPlotting learning curves to {plot_filename}...")
-    plot_learning_curves(
-        episode_rewards, 
-        avg_rewards, 
-        served_stats, 
-        collision_rates, 
-        avg_wait_times, 
-        filename=plot_filename
-    )
-    
-    print(f"\nGenerating animation to {gif_filename}...")
-    # 新しい create_restaurant_gif (ParallelEnv対応) を呼び出します
-    create_restaurant_gif(final_env, agents, filename=gif_filename)
-    
-    print("\nAll Done.")
+    # ==========================================
+    # 学習モード (Training Mode)
+    # ==========================================
+    if args.train:
+        print(f"=== Starting Training [{mode_suffix}] ===")
+        agent_config = AgentConfig(use_vdn=args.use_vdn, use_tar2=args.use_tar2)
+        training_config = TrainingConfig(agent_config=agent_config)
+
+        trainer = Trainer(
+            num_episodes=training_config.num_episodes,
+            use_shared_replay=training_config.use_shared_replay,
+            use_vdn=args.use_vdn,
+            use_qmix=args.use_qmix,
+            use_tar2=args.use_tar2,
+            config=config
+        )
+
+        # 学習実行
+        agents, ep_rewards, avg_rewards, served_stats, col_rates, wait_times, final_env = trainer.train()
+
+        # モデル保存
+        print("\nSaving models...")
+        trainer.save_agents(directory=args.model_dir, suffix=f"_{mode_suffix}")
+
+        # グラフ保存
+        plot_filename = f"learning_curves_{mode_suffix}.png"
+        plot_learning_curves(ep_rewards, avg_rewards, served_stats, col_rates, wait_times, filename=plot_filename)
+        
+        # GIF生成 (学習直後の状態)
+        gif_filename = f"restaurant_{mode_suffix}.gif"
+        print(f"Generating animation to {gif_filename}...")
+        create_restaurant_gif(final_env, agents, filename=gif_filename)
+
+    # ==========================================
+    # 評価・可視化モード (Evaluation Mode)
+    # ==========================================
+    elif args.eval:
+        print(f"=== Starting Evaluation (GIF Generation) [{mode_suffix}] ===")
+        
+        # 1. 環境の準備 (可視化用にComplexなどの難しいレイアウトを指定も可能)
+        # 評価時は customers=True, layout='complex' などを想定
+        env = RestaurantEnv(
+            layout_type='complex', 
+            enable_customers=True, 
+            customer_spawn_interval=30,
+            local_obs_size=5,
+            config=config
+        )
+        
+        state_dim = env.observation_space('agent_0').shape[0]
+        action_dim = 5 # envs/restaurant_env.py で spaces.Discrete(5) になっているため
+        
+        # 2. エージェントの初期化とロード
+        agents = {}
+        
+        if args.use_qmix:
+            global_state_dim = state_dim * 2
+            # バッファは推論時には不要なのでNone
+            agent = QMIXAgent(state_dim, action_dim, global_state_dim, num_agents=2, shared_buffer=None)
+            model_path = f"{args.model_dir}/qmix_agent_{mode_suffix}.pth"
+            if os.path.exists(model_path):
+                agent.load_model(model_path)
+                agents['qmix'] = agent
+                print(f"Loaded QMIX model from {model_path}")
+            else:
+                print(f"Error: Model file not found {model_path}")
+                return
+
+        elif args.use_vdn:
+            agent = VDNAgent(state_dim, action_dim, num_agents=2, shared_buffer=None)
+            model_path = f"{args.model_dir}/vdn_agent_{mode_suffix}.pth"
+            if os.path.exists(model_path):
+                agent.load_model(model_path)
+                agents['vdn'] = agent
+                print(f"Loaded VDN model from {model_path}")
+            else:
+                print(f"Error: Model file not found {model_path}")
+                return
+        else:
+            # Independent DQN
+            for agent_name in env.possible_agents:
+                agent = DQNAgent(state_dim, action_dim, shared_buffer=None)
+                model_path = f"{args.model_dir}/{agent_name}_{mode_suffix}.pth"
+                if os.path.exists(model_path):
+                    agent.load_model(model_path)
+                    agents[agent_name] = agent
+                    print(f"Loaded {agent_name} from {model_path}")
+                else:
+                    print(f"Error: Model file not found {model_path}")
+                    return
+
+        # 3. GIF生成
+        gif_filename = f"restaurant_eval_{mode_suffix}.gif"
+        print(f"\nGenerating animation using loaded models to {gif_filename}...")
+        
+        # Epsilonを0にして純粋な活用(Exploitation)を行う場合
+        # 各エージェントクラスの属性を直接書き換える
+        for k, ag in agents.items():
+            ag.epsilon = 0.0
+            
+        create_restaurant_gif(env, agents, filename=gif_filename)
+        print("Done.")
+
+    else:
+        print("Please specify --train or --eval argument.")
 
 if __name__ == "__main__":
-    main(use_vdn=False, use_qmix=True, use_tar2=False)
+    main()

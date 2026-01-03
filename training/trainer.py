@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import random
+import os
 from envs import RestaurantEnv
 from agents import DQNAgent, VDNAgent, SharedReplayBuffer
 from agents.tar2 import TAR2Network, collate_trajectories
@@ -422,3 +423,22 @@ class Trainer:
                         s_dict[name], a_dict[name], r_dict[name], ns_dict[name], d_dict[name]
                     )
                     self.agents[name].train()
+    
+    def save_agents(self, directory="models", suffix=""):
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+
+        if self.use_qmix:
+            path = f"{directory}/qmix_agent{suffix}.pth"
+            self.agents['qmix'].save_model(path)
+            print(f"Saved QMIX model to {path}")
+        elif self.use_vdn:
+            path = f"{directory}/vdn_agent{suffix}.pth"
+            self.agents['vdn'].save_model(path)
+            print(f"Saved VDN model to {path}")
+        else:
+            # Independent DQN
+            for agent_name, agent in self.agents.items():
+                path = f"{directory}/{agent_name}{suffix}.pth"
+                agent.save_model(path)
+                print(f"Saved {agent_name} model to {path}")

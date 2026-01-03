@@ -32,6 +32,14 @@ class DQNAgent:
         self.gamma = 0.95
         self.batch_size = 128
         self.update_counter = 0
+
+    def save_model(self, path):
+        torch.save(self.q_network.state_dict(), path)
+
+    # 【追加】モデル読み込み
+    def load_model(self, path):
+        self.q_network.load_state_dict(torch.load(path, map_location=self.device))
+        self.q_network.eval() # 推論モードへ
     
     def select_action(self, state):
         """ε-greedy 行動選択"""
@@ -138,6 +146,15 @@ class VDNAgent:
                     q_local = self.q_network.get_local_q(agent_idx, state_tensor) # 共通メソッドを使用
                     actions[agent_name] = q_local.argmax().item()
         return actions
+    
+    # 【追加】モデル保存
+    def save_model(self, path):
+        torch.save(self.q_network.state_dict(), path)
+
+    # 【追加】モデル読み込み
+    def load_model(self, path):
+        self.q_network.load_state_dict(torch.load(path, map_location=self.device))
+        self.q_network.eval()
     
     def store_transition(self, state_dict, action_dict, reward_dict, next_state_dict, done_dict):
         """マルチエージェント経験を保存"""

@@ -89,6 +89,22 @@ class QMIXAgent:
         self.batch_size = 128
         self.update_counter = 0
 
+    # 【追加】モデル保存 (dictでまとめて保存)
+    def save_model(self, path):
+        torch.save({
+            'q_network': self.q_network.state_dict(),
+            'mixer': self.mixer.state_dict()
+        }, path)
+
+    # 【追加】モデル読み込み
+    def load_model(self, path):
+        checkpoint = torch.load(path, map_location=self.device)
+        self.q_network.load_state_dict(checkpoint['q_network'])
+        self.mixer.load_state_dict(checkpoint['mixer'])
+        
+        self.q_network.eval()
+        self.mixer.eval()
+
     def select_actions(self, states_dict):
         actions = {}
         for agent_name, state in states_dict.items():
