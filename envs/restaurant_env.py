@@ -4,6 +4,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import numpy as np
 import functools
 import random
+from collections import deque  # 追加: 到達可能領域探索用
 from pettingzoo.utils.env import ParallelEnv
 from gymnasium import spaces
 
@@ -74,9 +75,55 @@ class RestaurantEnv(ParallelEnv):
     def action_space(self, agent):
         return self.action_spaces[agent]
     
+    def _get_connected_free_spaces(self, forbidden_positions):
+        """
+        【追加】エントランスまたはカウンター周辺から到達可能な、
+        「孤立していない」自由空間のリストを返す (BFS探索)
+        """
+        # 1. 探索の始点（シード）を決める
+        start_node = self.entrance_pos if self.entrance_pos else (1, 1)
+        
+        # もし始点自体が障害物なら、周辺の空いているマスを探す
+        if start_node in forbidden_positions:
+            found = False
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    nx, ny = start_node[0] + dx, start_node[1] + dy
+                    if (0 <= nx < self.grid_size and 
+                        0 <= ny < self.grid_size and 
+                        (nx, ny) not in forbidden_positions):
+                        start_node = (nx, ny)
+                        found = True
+                        break
+                if found: break
+        
+        # 2. 幅優先探索 (BFS) で到達可能エリアを特定
+        reachable = []
+        queue = deque([start_node])
+        visited = {start_node}
+        
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)] # 上下左右
+
+        while queue:
+            cx, cy = queue.popleft()
+            # 始点自体がforbiddenでない場合のみ追加
+            if (cx, cy) not in forbidden_positions:
+                reachable.append((cx, cy))
+
+            for dx, dy in directions:
+                nx, ny = cx + dx, cy + dy
+                
+                if (0 <= nx < self.grid_size and 0 <= ny < self.grid_size):
+                    if (nx, ny) not in visited and (nx, ny) not in forbidden_positions:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
+        
+        return reachable
+
     def reset(self, seed=None, options=None):
         if seed is not None:
             np.random.seed(seed)
+            random.seed(seed)
         
         self.agents = self.possible_agents[:]
         self.num_moves = 0
@@ -97,13 +144,21 @@ class RestaurantEnv(ParallelEnv):
                 self.grid[ox, oy] = -1
         
         # エージェント初期配置
-        all_positions = [(r, c) for r in range(self.grid_size) for c in range(self.grid_size)]
+        # --- 修正: 単純な空きマスではなく、到達可能な空きマスのみを抽出 ---
         forbidden = set(self.obstacles) | set(self.seats)
         if self.counter_pos:
             forbidden.add(self.counter_pos)
         
-        available_spaces = [p for p in all_positions if p not in forbidden]
+        # BFSを使って到達可能な場所だけをリストアップ
+        available_spaces = self._get_connected_free_spaces(forbidden)
+
+        # 万が一マップ生成の都合で配置場所が足りない場合のフォールバック（全空きマスを使用）
+        if len(available_spaces) < self.n_agents:
+            all_positions = [(r, c) for r in range(self.grid_size) for c in range(self.grid_size)]
+            available_spaces = [p for p in all_positions if p not in forbidden]
+        
         start_positions = random.sample(available_spaces, self.n_agents)
+        # -----------------------------------------------------------
         
         self.agent_positions = {agent: start_positions[i] for i, agent in enumerate(self.agents)}
         self.agent_directions = {agent: np.random.randint(0, 4) for agent in self.agents}
@@ -184,7 +239,6 @@ class RestaurantEnv(ParallelEnv):
             self.agents = [] # エージェントリストを空にして終了を示す
 
         # 6. 観測生成
-        # エージェントが空でなければ観測を生成、そうでなければ空辞書 (PettingZoo仕様に合わせるなら最後の観測を返す場合もあるが、通常はここでループ終了)
         observations = {}
         if self.agents:
             observations = {agent: self.observe(agent) for agent in self.agents}
@@ -242,14 +296,7 @@ class RestaurantEnv(ParallelEnv):
                 next_dir = (curr_dir + 1) % 4
             elif action == 2: # Turn Left
                 next_dir = (curr_dir - 1) % 4
-            # action 3 は元コードでは left だが、0-3の移動定義に合わせて修正が必要ならここを変える。
-            # ここでは元コードの _move_agent に従い、0:forward, 1:right, 2:left (down?), 3:???
-            # 元コード: 0: move(dir), 1: dir+1, 2: dir-1. Action 3 (Left?) の定義が抜けているか、4アクション想定。
-            # ※元コードでは action==3 の定義が _move_agent にありませんでした。
-            #   通常は 0:Up, 1:Right, 2:Down, 3:Left という絶対座標移動か、
-            #   0:Forward, 1:Right, 2:Back, 3:Left という相対移動です。
-            #   ここでは元コードのロジック (0:進む, 1:右転回, 2:左転回) を維持し、
-            #   それ以外の入力(3, 4)は「移動しない(Stay)」として扱います。
+            # それ以外の入力(3, 4)は「移動しない(Stay)」として扱います。
 
             intended_positions[agent] = next_pos
             intended_directions[agent] = next_dir
@@ -267,8 +314,7 @@ class RestaurantEnv(ParallelEnv):
             if intended_positions[agent] == self.agent_positions[agent]:
                 continue
             
-            # 障害物判定 (check_collision は自分以外のエージェントも見ているが、ここでは静的物体だけ見たいので工夫が必要)
-            # 簡易的に、obstacles, seats, customers だけチェック
+            # 障害物判定
             pos = intended_positions[agent]
             if (pos in self.obstacles) or (pos in self.seats) or (pos in customer_positions):
                 move_success[agent] = False
@@ -315,14 +361,9 @@ class RestaurantEnv(ParallelEnv):
                 self.agent_positions[agent] = intended_positions[agent]
                 self.agent_directions[agent] = intended_directions[agent]
             else:
-                # 失敗時は位置は更新しないが、方向転換(1, 2)だけは許可する設計も可。
-                # ここではシンプルに「衝突判定に引っかかったら全キャンセル」とするが、
-                # 回転だけなら衝突しないので許可しても良い。
-                # 今回は元のコードに合わせて、move_success=Falseなら方向も戻す（完全キャンセル）。
                 pass 
 
     def _process_interaction(self, agent, action, rewards):
-        # 元のコードとほぼ同じだが、rewards辞書を直接更新する
         x, y = self.agent_positions[agent]
         
         is_near_counter = False
@@ -333,8 +374,6 @@ class RestaurantEnv(ParallelEnv):
         
         # ピックアップ
         if is_near_counter and self.ready_dishes > 0 and self.agent_inventory[agent] < 4:
-            # ここも厳密には早い者勝ちになるが、在庫管理なので順不同でも大きな不公平はない
-            # もし厳密にするなら、ピックアップリクエストを集計して配分する
             self.ready_dishes -= 1
             self.agent_inventory[agent] += 1
             rewards[agent] += self.reward_params['pickup']
@@ -364,10 +403,6 @@ class RestaurantEnv(ParallelEnv):
                     rewards[other_agent] += current_reward * self.coop_factor
 
     def observe(self, agent):
-        # observe メソッドは元のままでOKですが、ParallelEnv用に引用します
-        # 変更点：self.agent_positions[agent] で取得する座標は、
-        # _move_agents_simultaneously で全エージェント更新済みのものなので公平
-        
         my_pos = self.agent_positions[agent]
         my_direction = self.agent_directions[agent]
         x, y = my_pos
@@ -375,7 +410,6 @@ class RestaurantEnv(ParallelEnv):
         obs_grid = self.grid.copy().astype(np.float32)
         for other_agent in self.possible_agents:
             if other_agent != agent:
-                # 終了したエージェントがいる場合などのガードが必要なら入れる
                 if other_agent in self.agent_positions:
                     ox, oy = self.agent_positions[other_agent]
                     obs_grid[ox, oy] = 2
