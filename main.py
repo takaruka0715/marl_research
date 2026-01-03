@@ -50,7 +50,7 @@ def main(use_vdn=False, use_qmix=False, use_tar2=False):
     
     # 5. 学習実行
     # Trainer内部で ParallelEnv がインスタンス化され、学習が進みます
-    agents, episode_rewards, avg_rewards, served_stats, final_env = trainer.train()
+    agents, episode_rewards, avg_rewards, served_stats, collision_rates, avg_wait_times, final_env = trainer.train()
     
     # 6. 出力ファイル名の決定ロジック
     if use_qmix:
@@ -69,7 +69,14 @@ def main(use_vdn=False, use_qmix=False, use_tar2=False):
 
     # 7. 結果の可視化と保存
     print(f"\nPlotting learning curves to {plot_filename}...")
-    plot_learning_curves(episode_rewards, avg_rewards, served_stats, filename=plot_filename)
+    plot_learning_curves(
+        episode_rewards, 
+        avg_rewards, 
+        served_stats, 
+        collision_rates, 
+        avg_wait_times, 
+        filename=plot_filename
+    )
     
     print(f"\nGenerating animation to {gif_filename}...")
     # 新しい create_restaurant_gif (ParallelEnv対応) を呼び出します

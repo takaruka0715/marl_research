@@ -83,6 +83,10 @@ class Trainer:
         self.avg_rewards = {agent: [] for agent in current_env.possible_agents}
         self.served_stats = {agent: [] for agent in current_env.possible_agents}
         
+        # 【追加】評価指標の記録用リスト
+        self.collision_rates = []
+        self.avg_wait_times = []
+        
         stage_episode_count = 0
         
         print(f"\n{'='*70}")
@@ -152,6 +156,25 @@ class Trainer:
                 self.avg_rewards[agent_name].append(np.mean(self.episode_rewards[agent_name][-50:]))
                 self.served_stats[agent_name].append(current_env.served_count[agent_name])
 
+            # ====================================================
+            # 【追加】評価指標の計算と記録
+            # ====================================================
+            # 1. 衝突率 (Collision Rate)
+            total_collisions = sum(current_env.collision_count.values())
+            # 延べステップ数 = ステップ数 * エージェント数 (途中終了を考慮しない簡易計算)
+            total_agent_steps = current_env.num_moves * len(current_env.possible_agents)
+            collision_rate = total_collisions / total_agent_steps if total_agent_steps > 0 else 0.0
+            self.collision_rates.append(collision_rate)
+
+            # 2. 平均待ち時間 (Average Wait Time)
+            # RestaurantEnv側で記録された completed_wait_times を使用
+            if hasattr(current_env, 'completed_wait_times') and len(current_env.completed_wait_times) > 0:
+                avg_wait = np.mean(current_env.completed_wait_times)
+            else:
+                avg_wait = 0.0
+            self.avg_wait_times.append(avg_wait)
+            # ====================================================
+
             # --- 2. TAR2 報酬再計算フェーズ ---
             shaped_rewards = None
             if self.use_tar2:
@@ -214,9 +237,11 @@ class Trainer:
                 print(f"Ep {episode:4d} | StgEp: {stage_episode_count:4d} | "
                       f"AvgReward: {team_avg_reward:6.1f} | "
                       f"Total Served: {total_served:4.1f} (A0:{served_a0:.1f}, A1:{served_a1:.1f}) | "
+                      f"CollRate: {collision_rate:.3f} | Wait: {avg_wait:.1f} | "
                       f"ε={eps:.3f}{tar2_msg}")
         
-        return self.agents, self.episode_rewards, self.avg_rewards, self.served_stats, current_env
+        # 戻り値に新しい指標を追加
+        return self.agents, self.episode_rewards, self.avg_rewards, self.served_stats, self.collision_rates, self.avg_wait_times, current_env
 
     def _run_episode_collect_only(self, env):
         """
@@ -300,7 +325,7 @@ class Trainer:
                     a_row.append(step_actions_dict[agent_name])
                 else:
                     a_row.append(0) # No-op or Dummy
-                
+            
                 # 報酬
                 r = rewards.get(agent_name, 0.0)
                 r_row.append(r)

@@ -4,7 +4,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import numpy as np
 import functools
 import random
-from collections import deque  # 追加: 到達可能領域探索用
+from collections import deque  # 到達可能領域探索用
 from pettingzoo.utils.env import ParallelEnv
 from gymnasium import spaces
 
@@ -77,7 +77,7 @@ class RestaurantEnv(ParallelEnv):
     
     def _get_connected_free_spaces(self, forbidden_positions):
         """
-        【追加】エントランスまたはカウンター周辺から到達可能な、
+        エントランスまたはカウンター周辺から到達可能な、
         「孤立していない」自由空間のリストを返す (BFS探索)
         """
         # 1. 探索の始点（シード）を決める
@@ -144,7 +144,7 @@ class RestaurantEnv(ParallelEnv):
                 self.grid[ox, oy] = -1
         
         # エージェント初期配置
-        # --- 修正: 単純な空きマスではなく、到達可能な空きマスのみを抽出 ---
+        # --- 単純な空きマスではなく、到達可能な空きマスのみを抽出 ---
         forbidden = set(self.obstacles) | set(self.seats)
         if self.counter_pos:
             forbidden.add(self.counter_pos)
@@ -168,6 +168,9 @@ class RestaurantEnv(ParallelEnv):
         self.kitchen_queue = []
         self.ready_dishes = 0
         self.active_orders = []
+        
+        # 【追加】待ち時間記録用リスト
+        self.completed_wait_times = []
         
         self.served_count = {agent: 0 for agent in self.agents}
         self.collision_count = {agent: 0 for agent in self.agents}
@@ -391,6 +394,9 @@ class RestaurantEnv(ParallelEnv):
                     
                     for customer in self.customer_manager.customers:
                         if customer.seat_position == order_pos and customer.state == 'ordered':
+                            # 【追加】配膳完了時の待ち時間を記録
+                            self.completed_wait_times.append(customer.wait_time)
+                            
                             customer.state = 'served'
                             customer.wait_time = 0
                     break
