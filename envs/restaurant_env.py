@@ -46,10 +46,10 @@ class RestaurantEnv(ParallelEnv):
                 'pickup': config.pickup_reward,
                 'collision': config.collision_penalty,
                 'step_cost': config.step_cost,
-                'wait_penalty': config.wait_penalty,
+                # 'wait_penalty': config.wait_penalty, # 削除: confs.pyから削除されたため参照しない
                 'coop_bonus_threshold': config.coop_bonus_threshold,
                 
-                # [cite_start]★追加: 設定ファイルから動的ペナルティ用パラメータを読み込む [cite: 274, 275]
+                # ★追加: 設定ファイルから動的ペナルティ用パラメータを読み込む
                 'max_wait_limit': config.max_wait_limit,
                 'wait_penalty_scale': config.wait_penalty_scale
             }
@@ -58,7 +58,10 @@ class RestaurantEnv(ParallelEnv):
         else:
             self.reward_params = {
                 'delivery': 100.0, 'pickup': 50.0, 'collision': -10.0,
-                'step_cost': -0.1, 'wait_penalty': -0.5, 'coop_bonus_threshold': 20.0,
+                'step_cost': -0.1, 
+                # 'wait_penalty': -0.5, # 削除
+                'coop_bonus_threshold': 20.0,
+                
                 # ★追加: デフォルト値
                 'max_wait_limit': 50.0,
                 'wait_penalty_scale': 0.1
@@ -233,7 +236,7 @@ class RestaurantEnv(ParallelEnv):
                 self.kitchen_queue.remove(item)
                 self.ready_dishes.append(item)
 
-        # 4. 共通ペナルティ (★修正: 動的待機ペナルティへの変更)
+        # 4. 共通ペナルティ (動的待機ペナルティ)
         # 設定ファイルから値を参照
         max_wait = self.reward_params.get('max_wait_limit', 50.0)
         scale = self.reward_params.get('wait_penalty_scale', 0.1)

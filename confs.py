@@ -11,7 +11,7 @@ class Config:
     # ペナルティ系
     collision_penalty: float = -0.5   # 衝突は「痛い」と感じる程度
     step_cost: float = -0.01          # 移動コストは小さく（-0.1だと遠くのゴールを諦めがち）
-    wait_penalty: float = -0.05       # 顧客を待たせるペナルティ(静的)
+    # wait_penalty: float = -0.05       # 顧客を待たせるペナルティ(静的)
     
     # ★追加: 動的待機ペナルティの設定
     max_wait_limit: float = 50.0      # ペナルティ計算の基準となる許容時間（これを超えると急増）
