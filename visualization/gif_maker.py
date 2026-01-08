@@ -73,7 +73,7 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif
             
             angle = dir_angles[d]
             ax.add_patch(Wedge((pos[1], pos[0]), 0.5, angle-30, angle+30, 
-                alpha=0.4, color='black'))
+                 alpha=0.4, color='black'))
         
         ax.invert_yaxis()
         
@@ -107,7 +107,6 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif
                 # VDN: エージェント管理クラスが select_actions を持つ想定
                 vdn_agent = agents['vdn']
                 actions = vdn_agent.select_actions(observations)
-                 
             else:
                 # Independent DQN: 各エージェントごとに個別に select_action
                 for agent_id in env.agents:
@@ -128,7 +127,8 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif
             
     # アニメーション生成
     # env.history にはステップごとのスナップショットが保存されている
-    ani = animation.FuncAnimation(fig, draw_frame, frames=env.history[::2], interval=150)
-    ani.save(filename, writer='pillow', fps=6)
+    # 【修正】[::2]の間引きを削除し、全てのフレームを描画するように変更。intervalで速度調整。
+    ani = animation.FuncAnimation(fig, draw_frame, frames=env.history, interval=100) # ← 修正箇所
+    ani.save(filename, writer='pillow', fps=10) # fpsもintervalに合わせて少し上げるなど調整可
     print(f"Saved GIF to {filename}")
     plt.close()

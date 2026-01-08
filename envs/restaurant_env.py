@@ -191,12 +191,13 @@ class RestaurantEnv(ParallelEnv):
         self.customer_manager.customer_counter = 0
         self.customer_manager.steps_since_last_spawn = 0
         
+        # 【修正】インベントリ内のリストが参照渡しにならないよう、リスト内包表記でコピーを作成
         self.history = [{
             'agent_positions': self.agent_positions.copy(),
             'agent_directions': self.agent_directions.copy(),
             'customers': [c.__dict__.copy() for c in self.customer_manager.customers],
             'active_orders': self.active_orders.copy(),
-            'agent_inventory': self.agent_inventory.copy(),
+            'agent_inventory': {k: v[:] for k, v in self.agent_inventory.items()}, # ← 修正箇所
             'ready_dishes': list(self.ready_dishes)
         }]
         
@@ -267,13 +268,14 @@ class RestaurantEnv(ParallelEnv):
              observations = {agent: self.observe(agent) for agent in self.possible_agents}
 
         # 履歴保存
+        # 【修正】インベントリ内のリストが参照渡しにならないよう、リスト内包表記でコピーを作成
         if self.agents:
              self.history.append({
                 'agent_positions': self.agent_positions.copy(),
                 'agent_directions': self.agent_directions.copy(),
                 'customers': [c.__dict__.copy() for c in self.customer_manager.customers],
                 'active_orders': self.active_orders.copy(),
-                'agent_inventory': self.agent_inventory.copy(),
+                'agent_inventory': {k: v[:] for k, v in self.agent_inventory.items()}, # ← 修正箇所
                 'ready_dishes': list(self.ready_dishes)
             })
 
