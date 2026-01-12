@@ -59,6 +59,9 @@ class CustomerManager:
                             'time_left': 5,
                             'target_seat': customer.seat_position
                         })
+            elif customer.state == 'ordered':
+                # 注文済み状態でも待ち時間を加算する
+                customer.wait_time += 1
             elif customer.state == 'served':
                 customer.wait_time += 1
                 if customer.wait_time >= 15:
