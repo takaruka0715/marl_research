@@ -258,6 +258,10 @@ class RestaurantEnv(ParallelEnv):
         self.num_moves += 1
         if self.num_moves >= self.max_steps:
             truncations = {agent: True for agent in self.agents}
+            for c in self.customer_manager.customers:
+                if c.state == 'ordered':
+                    # その時点での待ち時間を記録（ペナルティキャップなし）
+                    self.completed_wait_times.append(c.wait_time)
             self.agents = []
 
         # 6. 観測生成
