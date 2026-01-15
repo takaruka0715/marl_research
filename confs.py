@@ -14,8 +14,8 @@ class Config:
     # wait_penalty: float = -0.05       # 顧客を待たせるペナルティ(静的)
     
     # ★追加: 動的待機ペナルティの設定
-    max_wait_limit: float = 40.0      # ペナルティ計算の基準となる許容時間（これを超えると急増）
-    wait_penalty_scale: float = 0.3   # 動的ペナルティの強さ係数
+    max_wait_limit: float = 50.0      # ペナルティ計算の基準となる許容時間（これを超えると急増）
+    wait_penalty_scale: float = 0.1   # 動的ペナルティの強さ係数
 
     # 協力ボーナスなど
     coop_bonus_threshold: float = 2.0 # delivery_reward に合わせて調整
