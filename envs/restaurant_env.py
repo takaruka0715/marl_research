@@ -248,6 +248,7 @@ class RestaurantEnv(ParallelEnv):
             if c.state == 'ordered':
                 # 動的ペナルティ計算: 待ち時間が長いほど重くなる
                 urgency = (c.wait_time / max_wait) ** 2
+                urgency = min(urgency, 2.0)
                 total_wait_penalty -= urgency * scale
 
         # 全エージェントにペナルティ適用
