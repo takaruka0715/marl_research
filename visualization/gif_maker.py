@@ -111,8 +111,9 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif
         ax.set_title(f'Step: {len(env.history)} | Food: {ready_count}')
     
     # --- シミュレーション実行 (GIF生成用推論) ---
-    max_steps = 400
-    for step in range(max_steps):
+    limit_steps = getattr(env, 'max_steps', 400) 
+    
+    for step in range(limit_steps):
         if not env.agents:
             break
             
