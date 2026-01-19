@@ -26,6 +26,10 @@ class Trainer:
         self.episode_rewards = {}
         self.avg_rewards = {}
         self.served_stats = {}
+        
+        # 【追加】評価指標の記録用リスト
+        self.collision_rates = []
+        self.avg_wait_times = []
 
         # TAR2用バッファ
         self.tar2 = None
@@ -33,8 +37,7 @@ class Trainer:
     
     def train(self):
         """学習ループ実行"""
-        action_dim = 5 # ParallelEnvに変更したためアクション次元を確認 (Wait含むなら5、移動のみなら4)
-                       # ※Env側で spaces.Discrete(5) に設定したため 5 に修正
+        action_dim = 5 # ParallelEnvに変更したためアクション次元を確認 (Wait含むなら5)
         
         # 初期ステージ取得
         current_stage = self.curriculum.get_current_stage()
@@ -83,10 +86,6 @@ class Trainer:
         self.episode_rewards = {agent: [] for agent in current_env.possible_agents}
         self.avg_rewards = {agent: [] for agent in current_env.possible_agents}
         self.served_stats = {agent: [] for agent in current_env.possible_agents}
-        
-        # 【追加】評価指標の記録用リスト
-        self.collision_rates = []
-        self.avg_wait_times = []
         
         stage_episode_count = 0
         
@@ -148,8 +147,6 @@ class Trainer:
             # 報酬記録
             total_r = trajectory_data['total_reward']
             for agent_name in current_env.possible_agents:
-                # ParallelEnvでは個別に報酬が出るが、チーム評価用に合計を2分割して記録（従来互換）
-                # もしくは trajectory['rewards'] から個別の合計を出すのが正確
                 agent_idx = current_env.possible_agents.index(agent_name)
                 agent_total_r = np.sum(trajectory_data['rewards'][:, agent_idx])
                 
@@ -162,13 +159,12 @@ class Trainer:
             # ====================================================
             # 1. 衝突率 (Collision Rate)
             total_collisions = sum(current_env.collision_count.values())
-            # 延べステップ数 = ステップ数 * エージェント数 (途中終了を考慮しない簡易計算)
+            # 延べステップ数 = ステップ数 * エージェント数
             total_agent_steps = current_env.num_moves * len(current_env.possible_agents)
             collision_rate = total_collisions / total_agent_steps if total_agent_steps > 0 else 0.0
             self.collision_rates.append(collision_rate)
 
             # 2. 平均待ち時間 (Average Wait Time)
-            # RestaurantEnv側で記録された completed_wait_times を使用
             if hasattr(current_env, 'completed_wait_times') and len(current_env.completed_wait_times) > 0:
                 avg_wait = np.mean(current_env.completed_wait_times)
             else:
@@ -241,6 +237,50 @@ class Trainer:
                       f"CollRate: {collision_rate:.3f} | Wait: {avg_wait:.1f} | "
                       f"ε={eps:.3f}{tar2_msg}")
         
+        # ======================================================================
+        # ▼▼▼ 追加機能: 学習終了時に最良指標（移動平均）を出力 ▼▼▼
+        # ======================================================================
+        
+        # 1. チーム全体の合計報酬と合計配膳数を計算
+        n_eps = len(next(iter(self.episode_rewards.values())))
+        team_rewards = np.zeros(n_eps)
+        team_served = np.zeros(n_eps)
+        
+        for agent_name in self.episode_rewards:
+            team_rewards += np.array(self.episode_rewards[agent_name])
+            team_served += np.array(self.served_stats[agent_name])
+
+        # 2. 移動平均の計算ヘルパー (Window=50)
+        def get_best_ma(data, mode='max', window=50):
+            if len(data) < window:
+                return data[-1] if len(data) > 0 else 0.0
+            
+            # 移動平均を計算 ('valid'モードでウィンドウ分短くなる)
+            ma = np.convolve(data, np.ones(window)/window, mode='valid')
+            
+            if mode == 'max':
+                return np.max(ma)
+            else: # min
+                return np.min(ma)
+
+        # 3. 各指標の最良値を算出
+        best_reward_ma = get_best_ma(team_rewards, mode='max')
+        best_served_ma = get_best_ma(team_served, mode='max')
+        best_col_rate_ma = get_best_ma(self.collision_rates, mode='min')
+        best_wait_time_ma = get_best_ma(self.avg_wait_times, mode='min')
+
+        # 4. コンソール出力
+        print(f"\n{'='*70}")
+        print(f"📊 FINAL PERFORMANCE SUMMARY (Best Moving Avg over 50 eps)")
+        print(f"{'='*70}")
+        print(f"  ★ Best Team Reward:       {best_reward_ma:8.2f}")
+        print(f"  ★ Best Total Served:      {best_served_ma:8.2f} dishes")
+        print(f"  ★ Lowest Collision Rate:  {best_col_rate_ma:8.4f}")
+        print(f"  ★ Lowest Avg Wait Time:   {best_wait_time_ma:8.2f} steps")
+        print(f"{'='*70}\n")
+
+        # ======================================================================
+
         # 戻り値に新しい指標を追加
         return self.agents, self.episode_rewards, self.avg_rewards, self.served_stats, self.collision_rates, self.avg_wait_times, current_env
 
@@ -255,10 +295,9 @@ class Trainer:
         actions_seq = []
         rewards_seq = []
         dones_seq = []
-        global_states_seq = [] 
+        global_states_seq = []
 
         # エージェントIDの固定順序（保存データの整合性のため）
-        # ParallelEnvでは dict で返るため、順序を保証する必要がある
         agent_ids = env.possible_agents # ['agent_0', 'agent_1']
         
         def get_global_state(obs_dict):
@@ -274,22 +313,16 @@ class Trainer:
             step_states_list = []
             
             # 1. 全エージェントの行動決定 (同時)
-            # ParallelEnvなので、この時点での observations は全員「移動前」の状態
-            
             # 観測データの準備
             for agent_name in agent_ids:
                 # 終了したエージェントは observations に含まれない場合がある
                 if agent_name in observations:
                     step_states_list.append(observations[agent_name])
                 else:
-                    # 既にDoneのエージェント: ゼロ埋めなどで対処するか、
-                    # ここでは簡単のため直前の値を保持するか、もしくはスキップ。
-                    # 通常、env.agents に入っていなければ行動不要。
                     pass
 
             if self.use_vdn:
                 # VDN: まとめて行動選択
-                # observations は {agent_id: obs} なのでそのまま渡せる
                 step_actions_dict = self.agents['vdn'].select_actions(observations)
             elif getattr(self, 'use_qmix', False):
                 step_actions_dict = self.agents['qmix'].select_actions(observations)
@@ -302,8 +335,6 @@ class Trainer:
             next_observations, rewards, terminations, truncations, infos = env.step(step_actions_dict)
             
             # 3. データ保存 (リスト順序を揃える)
-            # 全エージェント分のデータを1行の配列として保存する
-            
             # 現在のステップのデータ
             s_row = []
             a_row = []
@@ -315,9 +346,6 @@ class Trainer:
                 if agent_name in observations:
                     s_row.append(observations[agent_name])
                 else:
-                    # エージェントがいなくなった場合（途中離脱）、ダミーデータを入れるか、
-                    # 最後の観測を使う。ここでは前のループで確保したshapeに合わせてゼロ埋め推奨だが
-                    # 簡易的に zeros を入れる
                     s_dim = env.observation_space(agent_name).shape[0]
                     s_row.append(np.zeros(s_dim))
 
@@ -346,27 +374,16 @@ class Trainer:
             # 次のステップへ
             observations = next_observations
             
-            # global state 更新 (エージェントが減っても shape を維持するための工夫が必要だが、
-            # 今回の環境は全員同時に終わる設定なので、observations から再構築でOK)
-            # ただし、全員終了して empty になった場合は next_obs が空になる
             if env.agents:
                 current_global_state = get_global_state(observations)
             else:
-                # 終了時は次状態のグローバルステートは不要（あるいは全部0）
-                # store_transition で next_state を使うため、便宜上最後の state をコピーするかゼロ埋め
                 pass
 
         # ループ終了後の処理
-        # store_and_train で next_state を使うため、最後の next_state も保存する必要があるが、
-        # 配列長を合わせるため、呼び出し元で t と t+1 をスライスして使う。
-        # ここでは states_seq には T ステップ分の s_t が入っている。
         # T+1 個目の s_{T} (Terminal State) を追加しておく
         
-        # 終了時の観測（ゼロ埋め or 最後のobs）を作成
         final_s_row = []
         for agent_name in agent_ids:
-            # 完全に終了しているので env.agents は空。
-            # ゼロベクトルを追加
             s_dim = env.observation_space(agent_name).shape[0]
             final_s_row.append(np.zeros(s_dim))
         states_seq.append(np.array(final_s_row))
@@ -377,7 +394,7 @@ class Trainer:
         global_states_seq.append(final_global)
 
         return {
-            'states': np.array(states_seq),         # (T+1, N, Dim)
+            'states': np.array(states_seq), # (T+1, N, Dim)
             'actions': np.array(actions_seq),       # (T, N)
             'rewards': np.array(rewards_seq),       # (T, N)
             'dones': np.array(dones_seq),           # (T, N)
@@ -386,8 +403,7 @@ class Trainer:
         }
 
     def _store_and_train_agents(self, trajectory, shaped_rewards):
-        """バッファ保存と学習 (変更なし・ただし辞書作成ロジックは確認)"""
-        # states_seq の長さは T+1, actions_seq は T
+        """バッファ保存と学習"""
         T = len(trajectory['actions'])
         agent_ids = ['agent_0', 'agent_1']
         
