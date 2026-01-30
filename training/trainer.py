@@ -458,3 +458,78 @@ class Trainer:
                 path = f"{directory}/{agent_name}{suffix}.pth"
                 agent.save_model(path)
                 print(f"Saved {agent_name} model to {path}")
+
+    # ▼▼▼ 追加: 統計テストモード用メソッド ▼▼▼
+    def evaluate(self, env, agents, num_episodes=100):
+        """
+        学習済みモデルを用いて指定エピソード数だけ実行し、統計指標を出力する
+        """
+        # 1. 探索率(epsilon)を0にして「活用」のみにする
+        for key, agent in agents.items():
+            if hasattr(agent, 'epsilon'):
+                agent.epsilon = 0.0
+        
+        # 統計用リスト
+        total_rewards = []
+        served_counts = []
+        collision_rates = []
+        wait_times = []
+
+        print(f"\nRunning {num_episodes} episodes for benchmark...")
+
+        for ep in range(num_episodes):
+            # エピソード実行
+            # self.agents を一時的に切り替えて _run_episode_collect_only を再利用する
+            original_agents = self.agents
+            self.agents = agents 
+
+            trajectory = self._run_episode_collect_only(env)
+            
+            # self.agents の復元
+            self.agents = original_agents
+
+            # --- 指標の収集 ---
+            # 1. 報酬
+            total_rewards.append(trajectory['total_reward'])
+
+            # 2. 配膳数
+            ep_served = sum(env.served_count.values())
+            served_counts.append(ep_served)
+
+            # 3. 衝突率
+            total_collisions = sum(env.collision_count.values())
+            total_steps = env.num_moves * len(env.possible_agents)
+            c_rate = total_collisions / total_steps if total_steps > 0 else 0.0
+            collision_rates.append(c_rate)
+
+            # 4. 平均待ち時間
+            if hasattr(env, 'completed_wait_times') and len(env.completed_wait_times) > 0:
+                avg_wait = np.mean(env.completed_wait_times)
+            else:
+                avg_wait = 0.0
+            wait_times.append(avg_wait)
+
+            # 進捗表示
+            if (ep + 1) % 10 == 0:
+                print(f"  Processed {ep + 1}/{num_episodes} episodes...", end='\r')
+
+        # --- 結果の集計と出力 ---
+        print(f"\n{'='*60}")
+        print(f"📊 TEST RESULTS (Average over {num_episodes} episodes)")
+        print(f"{'='*60}")
+        
+        mean_r, std_r = np.mean(total_rewards), np.std(total_rewards)
+        mean_s, std_s = np.mean(served_counts), np.std(served_counts)
+        mean_c, std_c = np.mean(collision_rates), np.std(collision_rates)
+        mean_w, std_w = np.mean(wait_times), np.std(wait_times)
+
+        print(f"  ★ Average Reward:       {mean_r:8.2f} ± {std_r:.2f}")
+        print(f"  ★ Average Served:       {mean_s:8.2f} ± {std_s:.2f} dishes")
+        print(f"  ★ Collision Rate:       {mean_c:8.4f} ± {std_c:.4f}")
+        print(f"  ★ Avg Wait Time:        {mean_w:8.2f} ± {std_w:.2f} steps")
+        print(f"{'='*60}")
+        
+        print(f"  [Best Record in Test]")
+        print(f"    Max Reward: {np.max(total_rewards):.2f}")
+        print(f"    Max Served: {np.max(served_counts)}")
+        print(f"{'='*60}\n")

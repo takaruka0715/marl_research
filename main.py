@@ -1,5 +1,3 @@
-# main.py の全書き換え案
-
 import torch
 import argparse
 import os
@@ -13,6 +11,10 @@ def get_args():
     parser = argparse.ArgumentParser(description="MARL Restaurant Service")
     parser.add_argument('--train', action='store_true', help='Run training mode')
     parser.add_argument('--eval', action='store_true', help='Run evaluation/visualization mode only')
+    # ▼▼▼ 追加: テストモード用引数 ▼▼▼
+    parser.add_argument('--test', action='store_true', help='Run statistical test mode (Benchmark)')
+    parser.add_argument('--test_episodes', type=int, default=100, help='Number of episodes for testing')
+    # ▲▲▲ 追加終了 ▲▲▲
     parser.add_argument('--use_vdn', action='store_true', help='Use VDN architecture')
     parser.add_argument('--use_qmix', action='store_true', help='Use QMIX architecture')
     parser.add_argument('--use_tar2', action='store_true', help='Use TAR2 reward shaping')
@@ -72,6 +74,75 @@ def main():
         gif_filename = f"restaurant_{mode_suffix}.gif"
         print(f"Generating animation to {gif_filename}...")
         create_restaurant_gif(final_env, agents, filename=gif_filename)
+
+    # ==========================================
+    # ▼▼▼ 追加: 統計テストモード (Test Mode) ▼▼▼
+    # ==========================================
+    elif args.test:
+        print(f"=== Starting Statistical Test [{mode_suffix}] ===")
+        print(f"Episodes: {args.test_episodes}")
+
+        # 1. 環境の準備 (テスト用: eval同様にComplexレイアウトを想定)
+        env = RestaurantEnv(
+            layout_type='complex', 
+            enable_customers=True, 
+            customer_spawn_interval=20,
+            local_obs_size=5,
+            config=config
+        )
+
+        state_dim = env.observation_space('agent_0').shape[0]
+        action_dim = 5 
+        
+        # 2. エージェントの初期化とロード (evalと同じロジック)
+        agents = {}
+        
+        if args.use_qmix:
+            global_state_dim = state_dim * 2
+            agent = QMIXAgent(state_dim, action_dim, global_state_dim, num_agents=2, shared_buffer=None)
+            model_path = f"{args.model_dir}/qmix_agent_{mode_suffix}.pth"
+            if os.path.exists(model_path):
+                agent.load_model(model_path)
+                agents['qmix'] = agent
+                print(f"Loaded QMIX model from {model_path}")
+            else:
+                print(f"Error: Model file not found {model_path}")
+                return
+
+        elif args.use_vdn:
+            agent = VDNAgent(state_dim, action_dim, num_agents=2, shared_buffer=None)
+            model_path = f"{args.model_dir}/vdn_agent_{mode_suffix}.pth"
+            if os.path.exists(model_path):
+                agent.load_model(model_path)
+                agents['vdn'] = agent
+                print(f"Loaded VDN model from {model_path}")
+            else:
+                print(f"Error: Model file not found {model_path}")
+                return
+        else:
+            # Independent DQN
+            for agent_name in env.possible_agents:
+                agent = DQNAgent(state_dim, action_dim, shared_buffer=None)
+                model_path = f"{args.model_dir}/{agent_name}_{mode_suffix}.pth"
+                if os.path.exists(model_path):
+                    agent.load_model(model_path)
+                    agents[agent_name] = agent
+                    print(f"Loaded {agent_name} from {model_path}")
+                else:
+                    print(f"Error: Model file not found {model_path}")
+                    return
+
+        # 3. 評価実行
+        # 【修正】ここでも train時と同様に use_qmix などのフラグを渡す必要があります
+        trainer = Trainer(
+            use_vdn=args.use_vdn,
+            use_qmix=args.use_qmix,
+            use_tar2=args.use_tar2,
+            config=config
+        )
+        
+        # Trainerに追加した evaluate メソッドを呼び出し
+        trainer.evaluate(env, agents, num_episodes=args.test_episodes)
 
     # ==========================================
     # 評価・可視化モード (Evaluation Mode)
@@ -144,7 +215,7 @@ def main():
         print("Done.")
 
     else:
-        print("Please specify --train or --eval argument.")
+        print("Please specify --train, --eval, or --test argument.")
 
 if __name__ == "__main__":
     main()
