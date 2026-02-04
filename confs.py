@@ -15,7 +15,11 @@ class Config:
     
     # ★追加: 動的待機ペナルティの設定
     max_wait_limit: float = 50.0      # ペナルティ計算の基準となる許容時間（これを超えると急増）
-    wait_penalty_scale: float = 0.0  # 動的ペナルティの強さ係数
+    wait_penalty_scale: float = 0.0  # 動的ペナルティの強さ係数（今回は相対評価メインなら0でも可）
+
+    # ★追加: 相対評価（緊急度）ボーナス設定
+    # 最も待たされている客を配膳した際の最大追加報酬
+    urgency_bonus_scale: float = 10.0 
 
     # 協力ボーナスなど
     coop_bonus_threshold: float = 2.0 # delivery_reward に合わせて調整
@@ -48,7 +52,7 @@ class AgentConfig:
     use_tar2: bool = False           # TAR2を使用するか
     
     # モデル構造パラメータ
-    hidden_dim: int = 64             # ネットワークの隠れ層サイズなど
+    hidden_dim: int = 64              # ネットワークの隠れ層サイズなど
 
 @dataclass
 class TrainingConfig:

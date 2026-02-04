@@ -32,7 +32,7 @@ class RestaurantEnv(ParallelEnv):
         # 【修正】座席ごとの観測次元を 6 -> 5 に最適化
         # 1.相対X
         # 2.相対Y
-        # 3.注文あり (客がいるか情報はこれに含まれるとみなす)
+        # 3.相対的緊急度 (0.0~1.0)  ← 変更点
         # 4.自分が所持している料理の宛先か
         # 5.カウンターにこの座席宛の料理があるか
         self.seat_obs_dim = self.max_seats_obs * 5
@@ -51,7 +51,10 @@ class RestaurantEnv(ParallelEnv):
                 
                 # ★追加: 設定ファイルから動的ペナルティ用パラメータを読み込む
                 'max_wait_limit': config.max_wait_limit,
-                'wait_penalty_scale': config.wait_penalty_scale
+                'wait_penalty_scale': config.wait_penalty_scale,
+                
+                # ★追加: 相対的緊急度ボーナス
+                'urgency_bonus_scale': getattr(config, 'urgency_bonus_scale', 10.0)
             }
             self.max_steps = config.max_steps
             self.coop_factor = config.coop_factor
@@ -64,7 +67,8 @@ class RestaurantEnv(ParallelEnv):
                 
                 # ★追加: デフォルト値
                 'max_wait_limit': 50.0,
-                'wait_penalty_scale': 0.1
+                'wait_penalty_scale': 0.1,
+                'urgency_bonus_scale': 10.0
             }
             self.max_steps = 500
             self.coop_factor = coop_factor
@@ -394,7 +398,33 @@ class RestaurantEnv(ParallelEnv):
                     
                     if target_dish:
                         self.agent_inventory[agent].remove(target_dish)
-                        rewards[agent] += self.reward_params['delivery']
+                        
+                        # === ★修正: 相対的緊急度に応じたボーナス報酬 ===
+                        # 1. 現在の「最大待ち時間」を計算 (分母)
+                        current_wait_times = [
+                            c.wait_time for c in self.customer_manager.customers 
+                            if c.state == 'ordered'
+                        ]
+                        max_wait = max(current_wait_times) if current_wait_times else 1.0
+                        
+                        # 2. 配膳した客の「相対的緊急度」を計算
+                        target_customer = next((c for c in self.customer_manager.customers 
+                                            if c.seat_position == order_pos), None)
+                        
+                        urgency_score = 0.0
+                        if target_customer:
+                            urgency_score = target_customer.wait_time / max_wait
+                        
+                        # 3. 報酬計算: 基本報酬 + (相対緊急度 × ボーナス係数)
+                        base_reward = self.reward_params['delivery']
+                        bonus_scale = self.reward_params.get('urgency_bonus_scale', 10.0)
+                        
+                        # 緊急度1.0(最も待っている)なら最大ボーナス、0.1なら少しだけ
+                        total_reward = base_reward + (urgency_score * bonus_scale)
+                        
+                        rewards[agent] += total_reward
+                        # ========================================
+
                         self.served_count[agent] += 1
                         if order_pos in self.active_orders:
                             self.active_orders.remove(order_pos)
@@ -404,7 +434,7 @@ class RestaurantEnv(ParallelEnv):
                                 self.completed_wait_times.append(customer.wait_time)
                                 customer.state = 'served'
                                 customer.wait_time = 0
-                        break
+                                break
         
         current_reward = rewards[agent]
         if current_reward >= self.reward_params['coop_bonus_threshold']:
@@ -473,14 +503,26 @@ class RestaurantEnv(ParallelEnv):
         
         my_target_seats = [d['target_seat'] for d in self.agent_inventory[agent]]
         counter_target_seats = [d['target_seat'] for d in self.ready_dishes]
+        
+        # ★追加: 現在の最大待ち時間を計算（相対評価用）
+        active_wait_times = [c.wait_time for c in self.customer_manager.customers if c.state == 'ordered']
+        max_wait = max(active_wait_times) if active_wait_times else 1.0
 
         for i in range(self.max_seats_obs):
             if i < len(self.seats):
                 sx, sy = self.seats[i]
                 seat_information.append((sx - x) / self.grid_size)
                 seat_information.append((sy - y) / self.grid_size)
-                # "客がいるか" は削除し、"注文があるか"に集約
-                seat_information.append(1.0 if (sx, sy) in self.active_orders else 0.0)
+                
+                # ★修正: 単なる「注文有無」ではなく「相対的緊急度 (0~1)」を入れる
+                urgency_feature = 0.0
+                if (sx, sy) in self.active_orders:
+                    c_obj = next((c for c in self.customer_manager.customers if c.seat_position == (sx, sy)), None)
+                    if c_obj:
+                        urgency_feature = c_obj.wait_time / max_wait
+                
+                seat_information.append(urgency_feature)
+                
                 seat_information.append(1.0 if (sx, sy) in my_target_seats else 0.0)
                 seat_information.append(1.0 if (sx, sy) in counter_target_seats else 0.0)
             else:
