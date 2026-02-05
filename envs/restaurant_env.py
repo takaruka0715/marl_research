@@ -490,8 +490,8 @@ class RestaurantEnv(ParallelEnv):
         standard_obs[idx:idx+2] = [x / self.grid_size, y / self.grid_size]
         standard_obs[idx+2] = my_direction / 4.0
         standard_obs[idx+3] = len(self.active_orders) / self.max_seats_obs
-        standard_obs[idx+4] = self.served_count[agent] / 20.0
-        standard_obs[idx+5] = self.collision_count[agent] / 100.0
+        standard_obs[idx+4] = min(self.served_count[agent] / 50.0, 1.0)
+        standard_obs[idx+5] = min(self.collision_count[agent] / 100.0, 1.0)
         standard_obs[idx+6] = len(self.agent_inventory[agent]) / 4.0
         standard_obs[idx+7] = 1.0 if len(self.agent_inventory[agent]) < 4 else 0.0
         standard_obs[idx+8] = min(len(self.ready_dishes), 5) / 5.0

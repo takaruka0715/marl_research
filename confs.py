@@ -27,7 +27,7 @@ class Config:
     
     # 環境の構造設定
     grid_size: int = 15
-    max_steps: int = 250
+    max_steps: int = 1000
     layout_type: str = "basic"        # 'empty', 'basic', 'complex' をここで管理
     local_obs_size: int = 5
     enable_customers: bool = True     # 顧客の有無も設定へ

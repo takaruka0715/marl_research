@@ -10,7 +10,7 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif
     """環境の遷移を GIF で保存 (ParallelEnv対応版)"""
     
     # 環境リセット (ParallelEnvは (obs, info) を返す)
-    observations, infos = env.reset(seed=42)
+    observations, infos = env.reset()
     
     fig, ax = plt.subplots(figsize=(8, 8))
     
