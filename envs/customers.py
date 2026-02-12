@@ -22,15 +22,38 @@ class CustomerManager:
         self.customer_counter = 0
         self.steps_since_last_spawn = 0
     
-    def spawn_customer(self, entrance_pos, seats):
+    def spawn_customer(self, entrance_pos, seats, counter_pos=None, min_dist_from_counter=0):
+        """
+        顧客を生成する。
+        min_dist_from_counter が指定されている場合、カウンターから一定距離以上離れた席のみを選択する。
+        """
         if not self.enable_customers or len(seats) == 0:
             return
+    
         occupied_seats = [c.seat_position for c in self.customers 
                          if c.state in ['seated', 'ordered', 'waiting_for_food']]
-        available_seats = [s for s in seats if s not in occupied_seats]
         
-        if len(available_seats) > 0 and entrance_pos:
-            seat = random.choice(available_seats)
+        candidate_seats = []
+
+        if counter_pos is None:
+            # カウンター位置が渡されない場合は従来の挙動（空いている全席が候補）
+            candidate_seats = [s for s in seats if s not in occupied_seats]
+        else:
+            cx, cy = counter_pos
+            for seat in seats:
+                if seat in occupied_seats:
+                    continue
+                
+                # マンハッタン距離を計算
+                sx, sy = seat
+                dist = abs(sx - cx) + abs(sy - cy)
+                
+                # 指定された距離以上離れている席のみ候補にする
+                if dist >= min_dist_from_counter:
+                    candidate_seats.append(seat)
+        
+        if len(candidate_seats) > 0 and entrance_pos:
+            seat = random.choice(candidate_seats)
             customer = Customer(self.customer_counter, entrance_pos, seat)
             self.customers.append(customer)
             self.customer_counter += 1

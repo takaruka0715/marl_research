@@ -15,13 +15,18 @@ from .utils_env import check_collision, get_adjacent_positions
 class RestaurantEnv(ParallelEnv):
     metadata = {"name": "restaurant_v2_parallel", "render_modes": ["human", "rgb_array"]}
     
+    # 【修正】min_customer_dist 引数を追加
     def __init__(self, grid_size=15, layout_type='basic', enable_customers=True,
-                 customer_spawn_interval=20, local_obs_size=5, coop_factor=0.0, config=None):
+                 customer_spawn_interval=20, local_obs_size=5, coop_factor=0.0, 
+                 min_customer_dist=0, config=None):
         super().__init__()
         
         self.grid_size = grid_size
         self.layout_type = layout_type
         self.local_obs_size = local_obs_size
+        
+        # 【修正】カリキュラム学習用の距離制限を保存
+        self.min_customer_dist = min_customer_dist
 
         self.possible_agents = ["agent_0", "agent_1"]
         self.agents = self.possible_agents[:]
@@ -29,12 +34,7 @@ class RestaurantEnv(ParallelEnv):
         
         self.max_seats_obs = 20 
         
-        # 【修正】座席ごとの観測次元を 6 -> 5 に最適化
-        # 1.相対X
-        # 2.相対Y
-        # 3.相対的緊急度 (0.0~1.0)  ← 変更点
-        # 4.自分が所持している料理の宛先か
-        # 5.カウンターにこの座席宛の料理があるか
+        # 座席ごとの観測次元 (相対X, 相対Y, 緊急度, 自ターゲット, カウンターターゲット)
         self.seat_obs_dim = self.max_seats_obs * 5
         
         self.num_view_directions = 8 
@@ -46,14 +46,9 @@ class RestaurantEnv(ParallelEnv):
                 'pickup': config.pickup_reward,
                 'collision': config.collision_penalty,
                 'step_cost': config.step_cost,
-                # 'wait_penalty': config.wait_penalty, # 削除: confs.pyから削除されたため参照しない
                 'coop_bonus_threshold': config.coop_bonus_threshold,
-                
-                # ★追加: 設定ファイルから動的ペナルティ用パラメータを読み込む
                 'max_wait_limit': config.max_wait_limit,
                 'wait_penalty_scale': config.wait_penalty_scale,
-                
-                # ★追加: 相対的緊急度ボーナス
                 'urgency_bonus_scale': getattr(config, 'urgency_bonus_scale', 10.0)
             }
             self.max_steps = config.max_steps
@@ -62,10 +57,7 @@ class RestaurantEnv(ParallelEnv):
             self.reward_params = {
                 'delivery': 100.0, 'pickup': 50.0, 'collision': -10.0,
                 'step_cost': -0.1, 
-                # 'wait_penalty': -0.5, # 削除
                 'coop_bonus_threshold': 20.0,
-                
-                # ★追加: デフォルト値
                 'max_wait_limit': 50.0,
                 'wait_penalty_scale': 0.1,
                 'urgency_bonus_scale': 10.0
@@ -116,7 +108,7 @@ class RestaurantEnv(ParallelEnv):
                         start_node = (nx, ny)
                         found = True
                         break
-                if found: break
+            if found: break
         
         # 2. 幅優先探索 (BFS) で到達可能エリアを特定
         reachable = []
@@ -133,7 +125,6 @@ class RestaurantEnv(ParallelEnv):
 
             for dx, dy in directions:
                 nx, ny = cx + dx, cy + dy
-                
                 if (0 <= nx < self.grid_size and 0 <= ny < self.grid_size):
                     if (nx, ny) not in visited and (nx, ny) not in forbidden_positions:
                         visited.add((nx, ny))
@@ -195,13 +186,13 @@ class RestaurantEnv(ParallelEnv):
         self.customer_manager.customer_counter = 0
         self.customer_manager.steps_since_last_spawn = 0
         
-        # 【修正】インベントリ内のリストが参照渡しにならないよう、リスト内包表記でコピーを作成
+        # 履歴の初期化
         self.history = [{
             'agent_positions': self.agent_positions.copy(),
             'agent_directions': self.agent_directions.copy(),
             'customers': [c.__dict__.copy() for c in self.customer_manager.customers],
             'active_orders': self.active_orders.copy(),
-            'agent_inventory': {k: v[:] for k, v in self.agent_inventory.items()}, # ← 修正箇所
+            'agent_inventory': {k: v[:] for k, v in self.agent_inventory.items()},
             'ready_dishes': list(self.ready_dishes)
         }]
         
@@ -227,7 +218,13 @@ class RestaurantEnv(ParallelEnv):
         # 3. 顧客生成と更新
         self.customer_manager.steps_since_last_spawn += 1
         if self.customer_manager.steps_since_last_spawn >= self.customer_manager.spawn_interval:
-            self.customer_manager.spawn_customer(self.entrance_pos, self.seats)
+            # 【修正】counter_pos と min_dist_from_counter を渡して距離制限付きでスポーンさせる
+            self.customer_manager.spawn_customer(
+                self.entrance_pos, 
+                self.seats,
+                counter_pos=self.counter_pos,
+                min_dist_from_counter=self.min_customer_dist
+            )
             self.customer_manager.steps_since_last_spawn = 0
         
         new_orders, new_kitchen = self.customer_manager.update_customers()
@@ -242,7 +239,6 @@ class RestaurantEnv(ParallelEnv):
                 self.ready_dishes.append(item)
 
         # 4. 共通ペナルティ (動的待機ペナルティ)
-        # 設定ファイルから値を参照
         max_wait = self.reward_params.get('max_wait_limit', 50.0)
         scale = self.reward_params.get('wait_penalty_scale', 0.1)
 
@@ -250,12 +246,10 @@ class RestaurantEnv(ParallelEnv):
         
         for c in self.customer_manager.customers:
             if c.state == 'ordered':
-                # 動的ペナルティ計算: 待ち時間が長いほど重くなる
                 urgency = (c.wait_time / max_wait) ** 2
                 urgency = min(urgency, 2.0)
                 total_wait_penalty -= urgency * scale
 
-        # 全エージェントにペナルティ適用
         for agent in self.agents:
             rewards[agent] += total_wait_penalty
 
@@ -265,7 +259,6 @@ class RestaurantEnv(ParallelEnv):
             truncations = {agent: True for agent in self.agents}
             for c in self.customer_manager.customers:
                 if c.state == 'ordered':
-                    # その時点での待ち時間を記録（ペナルティキャップなし）
                     self.completed_wait_times.append(c.wait_time)
             self.agents = []
 
@@ -277,14 +270,13 @@ class RestaurantEnv(ParallelEnv):
              observations = {agent: self.observe(agent) for agent in self.possible_agents}
 
         # 履歴保存
-        # 【修正】インベントリ内のリストが参照渡しにならないよう、リスト内包表記でコピーを作成
         if self.agents:
              self.history.append({
                 'agent_positions': self.agent_positions.copy(),
                 'agent_directions': self.agent_directions.copy(),
                 'customers': [c.__dict__.copy() for c in self.customer_manager.customers],
                 'active_orders': self.active_orders.copy(),
-                'agent_inventory': {k: v[:] for k, v in self.agent_inventory.items()}, # ← 修正箇所
+                'agent_inventory': {k: v[:] for k, v in self.agent_inventory.items()},
                 'ready_dishes': list(self.ready_dishes)
             })
 
@@ -399,15 +391,13 @@ class RestaurantEnv(ParallelEnv):
                     if target_dish:
                         self.agent_inventory[agent].remove(target_dish)
                         
-                        # === ★修正: 相対的緊急度に応じたボーナス報酬 ===
-                        # 1. 現在の「最大待ち時間」を計算 (分母)
+                        # 相対的緊急度ボーナス
                         current_wait_times = [
                             c.wait_time for c in self.customer_manager.customers 
                             if c.state == 'ordered'
                         ]
                         max_wait = max(current_wait_times) if current_wait_times else 1.0
                         
-                        # 2. 配膳した客の「相対的緊急度」を計算
                         target_customer = next((c for c in self.customer_manager.customers 
                                             if c.seat_position == order_pos), None)
                         
@@ -415,15 +405,12 @@ class RestaurantEnv(ParallelEnv):
                         if target_customer:
                             urgency_score = target_customer.wait_time / max_wait
                         
-                        # 3. 報酬計算: 基本報酬 + (相対緊急度 × ボーナス係数)
                         base_reward = self.reward_params['delivery']
                         bonus_scale = self.reward_params.get('urgency_bonus_scale', 10.0)
                         
-                        # 緊急度1.0(最も待っている)なら最大ボーナス、0.1なら少しだけ
                         total_reward = base_reward + (urgency_score * bonus_scale)
                         
                         rewards[agent] += total_reward
-                        # ========================================
 
                         self.served_count[agent] += 1
                         if order_pos in self.active_orders:
@@ -504,7 +491,6 @@ class RestaurantEnv(ParallelEnv):
         my_target_seats = [d['target_seat'] for d in self.agent_inventory[agent]]
         counter_target_seats = [d['target_seat'] for d in self.ready_dishes]
         
-        # ★追加: 現在の最大待ち時間を計算（相対評価用）
         active_wait_times = [c.wait_time for c in self.customer_manager.customers if c.state == 'ordered']
         max_wait = max(active_wait_times) if active_wait_times else 1.0
 
@@ -514,7 +500,6 @@ class RestaurantEnv(ParallelEnv):
                 seat_information.append((sx - x) / self.grid_size)
                 seat_information.append((sy - y) / self.grid_size)
                 
-                # ★修正: 単なる「注文有無」ではなく「相対的緊急度 (0~1)」を入れる
                 urgency_feature = 0.0
                 if (sx, sy) in self.active_orders:
                     c_obj = next((c for c in self.customer_manager.customers if c.seat_position == (sx, sy)), None)
@@ -522,11 +507,9 @@ class RestaurantEnv(ParallelEnv):
                         urgency_feature = c_obj.wait_time / max_wait
                 
                 seat_information.append(urgency_feature)
-                
                 seat_information.append(1.0 if (sx, sy) in my_target_seats else 0.0)
                 seat_information.append(1.0 if (sx, sy) in counter_target_seats else 0.0)
             else:
-                # パディングも5次元に変更
                 seat_information.extend([0.0, 0.0, 0.0, 0.0, 0.0])
 
         full_obs = np.concatenate([standard_obs, np.array(seat_information, dtype=np.float32)])

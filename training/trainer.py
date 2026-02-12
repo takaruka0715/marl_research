@@ -43,11 +43,13 @@ class Trainer:
         current_stage = self.curriculum.get_current_stage()
         
         # 環境初期化
+        # 【修正】min_customer_dist をカリキュラムから取得して渡す
         current_env = RestaurantEnv(
             layout_type=current_stage['layout'],
             enable_customers=current_stage['customers'],
             customer_spawn_interval=current_stage['spawn_interval'],
             local_obs_size=5,
+            min_customer_dist=current_stage.get('min_customer_dist', 0), # ★追加
             config=self.config
         )
 
@@ -121,11 +123,14 @@ class Trainer:
                 print(f"{'='*70}")
                 
                 current_stage = new_stage
+                
+                # 【修正】ステージ移行時も min_customer_dist を渡す
                 current_env = RestaurantEnv(
                     layout_type=current_stage['layout'],
                     enable_customers=current_stage['customers'],
                     customer_spawn_interval=current_stage['spawn_interval'],
                     local_obs_size=5,
+                    min_customer_dist=current_stage.get('min_customer_dist', 0), # ★追加
                     coop_factor=self.config.coop_factor,
                     config=self.config
                 )

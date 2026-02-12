@@ -43,7 +43,7 @@ class AgentConfig:
     
     # Epsilon-Greedy
     epsilon: float = 1.0
-    epsilon_decay: float = 0.9997
+    epsilon_decay: float = 0.99999
     epsilon_min: float = 0.05
 
     # アルゴリズム選択フラグ
