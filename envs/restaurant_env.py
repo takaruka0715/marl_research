@@ -108,7 +108,8 @@ class RestaurantEnv(ParallelEnv):
                         start_node = (nx, ny)
                         found = True
                         break
-            if found: break
+                if found: # ★修正箇所: インデントをループ内に移動
+                    break
         
         # 2. 幅優先探索 (BFS) で到達可能エリアを特定
         reachable = []
