@@ -1,64 +1,30 @@
 class Curriculum:
     """
     タイムアウト機能付き適応的カリキュラム（配膳数ベース）
-    修正版v2: 距離制限をより細かく刻み、難易度上昇を滑らかに設定
+    修正版: 全範囲解禁スタートの簡略化カリキュラム
     """
     def __init__(self):
         self.current_stage_idx = 0
         self.stages = [
-            # Stage 1: 超遠距離 (Very Long Distance)
-            # カウンター(7,1)からマンハッタン距離12以上
-            # 四隅などの本当に遠い席のみ出現させ、確実に遠出を学習させる
+            # Stage 1: 全範囲 (Full Random)
+            # 最初から距離制限なし（近距離も遠距離も解禁）
             {
                 'layout': 'complex', 
                 'customers': True, 
-                'spawn_interval': 40,
-                'min_customer_dist': 12,  # ★かなり厳しく制限
-                'description': 'Stage 1: Very Long Distance',
-                'threshold': 2.0,        # 2皿でクリア
-                'timeout_episodes': 4000
+                'spawn_interval': 30,     # 適度な注文ペース
+                'min_customer_dist': 0,   # 全解禁
+                'description': 'Stage 1: Full Random Distribution',
+                'threshold': 10.0,        # 10皿でクリア
+                'timeout_episodes': 5000
             },
-            # Stage 2: 遠距離 (Long Distance)
-            # 距離9以上。外周エリア全体を含める
+            # Stage 2: High Load (Final)
+            # 高負荷設定（注文ペースが速い）
             {
                 'layout': 'complex', 
                 'customers': True, 
-                'spawn_interval': 40,
-                'min_customer_dist': 8,   # ★少し緩和
-                'description': 'Stage 2: Long Distance',
-                'threshold': 3.0,        # 3皿でクリア
-                'timeout_episodes': 3000
-            },
-            # Stage 3: 中距離 (Medium Distance)
-            # 距離6以上。カウンター近辺以外はほぼ解禁
-            {
-                'layout': 'complex', 
-                'customers': True, 
-                'spawn_interval': 30,
-                'min_customer_dist': 6,   # ★さらに緩和
-                'description': 'Stage 3: Medium Distance',
-                'threshold': 4.0,        # 4皿でクリア
-                'timeout_episodes': 3000
-            },
-            # Stage 4: 全範囲 (Full Random)
-            # 距離制限なし（近距離も解禁）
-            {
-                'layout': 'complex', 
-                'customers': True, 
-                'spawn_interval': 30,
-                'min_customer_dist': 0,   # ★全解禁
-                'description': 'Stage 4: Full Random Distribution',
-                'threshold': 6.0,        # 6皿でクリア
-                'timeout_episodes': 4000
-            },
-            # Stage 5: High Load (Final)
-            # 高負荷設定
-            {
-                'layout': 'complex', 
-                'customers': True, 
-                'spawn_interval': 20,
+                'spawn_interval': 15,
                 'min_customer_dist': 0,
-                'description': 'Stage 5: High Load Efficiency',
+                'description': 'Stage 2: High Load Efficiency',
                 'threshold': float('inf'),
                 'timeout_episodes': float('inf')
             },

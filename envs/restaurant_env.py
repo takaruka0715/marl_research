@@ -4,7 +4,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import numpy as np
 import functools
 import random
-from collections import deque  # 到達可能領域探索用
+from collections import deque
 from pettingzoo.utils.env import ParallelEnv
 from gymnasium import spaces
 
@@ -15,7 +15,6 @@ from .utils_env import check_collision, get_adjacent_positions
 class RestaurantEnv(ParallelEnv):
     metadata = {"name": "restaurant_v2_parallel", "render_modes": ["human", "rgb_array"]}
     
-    # 【修正】min_customer_dist 引数を追加
     def __init__(self, grid_size=15, layout_type='basic', enable_customers=True,
                  customer_spawn_interval=20, local_obs_size=5, coop_factor=0.0, 
                  min_customer_dist=0, config=None):
@@ -25,7 +24,6 @@ class RestaurantEnv(ParallelEnv):
         self.layout_type = layout_type
         self.local_obs_size = local_obs_size
         
-        # 【修正】カリキュラム学習用の距離制限を保存
         self.min_customer_dist = min_customer_dist
 
         self.possible_agents = ["agent_0", "agent_1"]
@@ -65,8 +63,8 @@ class RestaurantEnv(ParallelEnv):
             self.max_steps = 500
             self.coop_factor = coop_factor
         
-        # 観測空間の定義
-        obs_extra_dim = 10 + self.seat_obs_dim + self.n_agents 
+        # 観測空間の定義 (カウンターの相対座標分として +12 に修正)
+        obs_extra_dim = 12 + self.seat_obs_dim + self.n_agents 
         obs_dim = self.view_dim + obs_extra_dim
         
         self.observation_spaces = {
@@ -93,10 +91,8 @@ class RestaurantEnv(ParallelEnv):
         エントランスまたはカウンター周辺から到達可能な、
         「孤立していない」自由空間のリストを返す (BFS探索)
         """
-        # 1. 探索の始点（シード）を決める
         start_node = self.entrance_pos if self.entrance_pos else (1, 1)
         
-        # もし始点自体が障害物なら、周辺の空いているマスを探す
         if start_node in forbidden_positions:
             found = False
             for dx in [-1, 0, 1]:
@@ -108,10 +104,9 @@ class RestaurantEnv(ParallelEnv):
                         start_node = (nx, ny)
                         found = True
                         break
-                if found: # ★修正箇所: インデントをループ内に移動
+                if found:
                     break
         
-        # 2. 幅優先探索 (BFS) で到達可能エリアを特定
         reachable = []
         queue = deque([start_node])
         visited = {start_node}
@@ -120,7 +115,6 @@ class RestaurantEnv(ParallelEnv):
 
         while queue:
             cx, cy = queue.popleft()
-            # 始点自体がforbiddenでない場合のみ追加
             if (cx, cy) not in forbidden_positions:
                 reachable.append((cx, cy))
 
@@ -141,7 +135,6 @@ class RestaurantEnv(ParallelEnv):
         self.agents = self.possible_agents[:]
         self.num_moves = 0
         
-        # レイアウト生成
         obstacles, tables, seats, counter_pos, entrance_pos = LayoutBuilder.create_layout(
             self.layout_type, self.grid_size)
         self.obstacles = obstacles
@@ -150,13 +143,11 @@ class RestaurantEnv(ParallelEnv):
         self.counter_pos = counter_pos
         self.entrance_pos = entrance_pos
         
-        # グリッド初期化
         self.grid = np.zeros((self.grid_size, self.grid_size), dtype=int)
         for ox, oy in self.obstacles:
             if 0 <= ox < self.grid_size and 0 <= oy < self.grid_size:
                 self.grid[ox, oy] = -1
         
-        # エージェント初期配置
         forbidden = set(self.obstacles) | set(self.seats)
         if self.counter_pos:
             forbidden.add(self.counter_pos)
@@ -187,7 +178,6 @@ class RestaurantEnv(ParallelEnv):
         self.customer_manager.customer_counter = 0
         self.customer_manager.steps_since_last_spawn = 0
         
-        # 履歴の初期化
         self.history = [{
             'agent_positions': self.agent_positions.copy(),
             'agent_directions': self.agent_directions.copy(),
@@ -208,18 +198,14 @@ class RestaurantEnv(ParallelEnv):
         truncations = {agent: False for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
 
-        # 1. 移動ロジック
         self._move_agents_simultaneously(actions, rewards)
 
-        # 2. インタラクション処理
         for agent in self.agents:
             if agent in actions:
                 self._process_interaction(agent, actions[agent], rewards)
 
-        # 3. 顧客生成と更新
         self.customer_manager.steps_since_last_spawn += 1
         if self.customer_manager.steps_since_last_spawn >= self.customer_manager.spawn_interval:
-            # 【修正】counter_pos と min_dist_from_counter を渡して距離制限付きでスポーンさせる
             self.customer_manager.spawn_customer(
                 self.entrance_pos, 
                 self.seats,
@@ -232,14 +218,12 @@ class RestaurantEnv(ParallelEnv):
         self.active_orders.extend([o for o in new_orders if o not in self.active_orders])
         self.kitchen_queue.extend(new_kitchen)
         
-        # 調理進行
         for item in self.kitchen_queue[:]:
             item['time_left'] -= 1
             if item['time_left'] <= 0:
                 self.kitchen_queue.remove(item)
                 self.ready_dishes.append(item)
 
-        # 4. 共通ペナルティ (動的待機ペナルティ)
         max_wait = self.reward_params.get('max_wait_limit', 50.0)
         scale = self.reward_params.get('wait_penalty_scale', 0.1)
 
@@ -254,7 +238,6 @@ class RestaurantEnv(ParallelEnv):
         for agent in self.agents:
             rewards[agent] += total_wait_penalty
 
-        # 5. ステップ数カウントと終了判定
         self.num_moves += 1
         if self.num_moves >= self.max_steps:
             truncations = {agent: True for agent in self.agents}
@@ -263,14 +246,12 @@ class RestaurantEnv(ParallelEnv):
                     self.completed_wait_times.append(c.wait_time)
             self.agents = []
 
-        # 6. 観測生成
         observations = {}
         if self.agents:
             observations = {agent: self.observe(agent) for agent in self.agents}
         else:
              observations = {agent: self.observe(agent) for agent in self.possible_agents}
 
-        # 履歴保存
         if self.agents:
              self.history.append({
                 'agent_positions': self.agent_positions.copy(),
@@ -301,16 +282,16 @@ class RestaurantEnv(ParallelEnv):
             next_pos = curr_pos
             next_dir = curr_dir
             
-            if action == 0: # Move Forward
+            if action == 0: 
                 dx, dy = dir_vectors[curr_dir]
                 temp_x = max(0, min(self.grid_size - 1, curr_pos[0] + dx))
                 temp_y = max(0, min(self.grid_size - 1, curr_pos[1] + dy))
                 next_pos = (temp_x, temp_y)
                 rewards[agent] += self.reward_params['step_cost']
                 
-            elif action == 1: # Turn Right
+            elif action == 1: 
                 next_dir = (curr_dir + 1) % 4
-            elif action == 2: # Turn Left
+            elif action == 2: 
                 next_dir = (curr_dir - 1) % 4
 
             intended_positions[agent] = next_pos
@@ -372,13 +353,11 @@ class RestaurantEnv(ParallelEnv):
             if abs(x - cx) + abs(y - cy) <= 1:
                 is_near_counter = True
         
-        # --- ピックアップ処理 ---
         if is_near_counter and len(self.ready_dishes) > 0 and len(self.agent_inventory[agent]) < 4:
             dish = self.ready_dishes.pop(0)
             self.agent_inventory[agent].append(dish)
             rewards[agent] += self.reward_params['pickup']
         
-        # --- 配膳処理 ---
         if len(self.agent_inventory[agent]) > 0:
             for order_pos in self.active_orders[:]:
                 adjacent = get_adjacent_positions(order_pos)
@@ -392,7 +371,6 @@ class RestaurantEnv(ParallelEnv):
                     if target_dish:
                         self.agent_inventory[agent].remove(target_dish)
                         
-                        # 相対的緊急度ボーナス
                         current_wait_times = [
                             c.wait_time for c in self.customer_manager.customers 
                             if c.state == 'ordered'
@@ -400,7 +378,7 @@ class RestaurantEnv(ParallelEnv):
                         max_wait = max(current_wait_times) if current_wait_times else 1.0
                         
                         target_customer = next((c for c in self.customer_manager.customers 
-                                            if c.seat_position == order_pos), None)
+                                           if c.seat_position == order_pos), None)
                         
                         urgency_score = 0.0
                         if target_customer:
@@ -410,7 +388,6 @@ class RestaurantEnv(ParallelEnv):
                         bonus_scale = self.reward_params.get('urgency_bonus_scale', 10.0)
                         
                         total_reward = base_reward + (urgency_score * bonus_scale)
-                        
                         rewards[agent] += total_reward
 
                         self.served_count[agent] += 1
@@ -471,7 +448,8 @@ class RestaurantEnv(ParallelEnv):
                     local_obs.append(-1.0)
                     view_blocked = True
         
-        standard_obs = np.zeros(len(local_obs) + 10, dtype=np.float32)
+        # --- 1. standard_obs の作成（+ カウンター相対座標） ---
+        standard_obs = np.zeros(len(local_obs) + 12, dtype=np.float32) # 次元を10から12に変更
         standard_obs[:len(local_obs)] = local_obs
         
         idx = len(local_obs)
@@ -484,36 +462,61 @@ class RestaurantEnv(ParallelEnv):
         standard_obs[idx+7] = 1.0 if len(self.agent_inventory[agent]) < 4 else 0.0
         standard_obs[idx+8] = min(len(self.ready_dishes), 5) / 5.0
         standard_obs[idx+9] = 1.0 if len(self.ready_dishes) > 0 else 0.0
+        
+        # カウンターへの相対座標を追加
+        cx, cy = self.counter_pos if self.counter_pos else (7, 1)
+        standard_obs[idx+10] = (cx - x) / self.grid_size
+        standard_obs[idx+11] = (cy - y) / self.grid_size
 
-        seat_information = []
-        active_customer_seats = [c.seat_position for c in self.customer_manager.customers 
-                                 if c.state in ['seated', 'ordered', 'served']]
-        
-        my_target_seats = [d['target_seat'] for d in self.agent_inventory[agent]]
-        counter_target_seats = [d['target_seat'] for d in self.ready_dishes]
-        
+        # --- 2. 動的なオーダースロットの作成 ---
+        order_slots = []
+        all_active_orders = []
+
+        # ① 自分が持っている料理を最優先でリストに追加
+        for dish in self.agent_inventory[agent]:
+            all_active_orders.append({'pos': dish['target_seat'], 'status': 'held_by_me'})
+
+        # ② カウンターで完成済みの料理を次に追加
+        for dish in self.ready_dishes:
+            all_active_orders.append({'pos': dish['target_seat'], 'status': 'ready_at_counter'})
+
+        # ③ まだ調理中・待ち状態の注文（①、②に含まれないもの）を追加
+        held_or_ready_positions = [o['pos'] for o in all_active_orders]
+        for order_pos in self.active_orders:
+            if order_pos not in held_or_ready_positions:
+                all_active_orders.append({'pos': order_pos, 'status': 'waiting'})
+
         active_wait_times = [c.wait_time for c in self.customer_manager.customers if c.state == 'ordered']
         max_wait = max(active_wait_times) if active_wait_times else 1.0
 
+        # --- 3. 最大座席数（20枠）に合わせてゼロパディング ---
         for i in range(self.max_seats_obs):
-            if i < len(self.seats):
-                sx, sy = self.seats[i]
-                seat_information.append((sx - x) / self.grid_size)
-                seat_information.append((sy - y) / self.grid_size)
+            if i < len(all_active_orders):
+                order = all_active_orders[i]
+                tx, ty = order['pos']
                 
-                urgency_feature = 0.0
-                if (sx, sy) in self.active_orders:
-                    c_obj = next((c for c in self.customer_manager.customers if c.seat_position == (sx, sy)), None)
-                    if c_obj:
-                        urgency_feature = c_obj.wait_time / max_wait
+                # 緊急度の取得
+                c_obj = next((c for c in self.customer_manager.customers if c.seat_position == (tx, ty)), None)
+                urgency = (c_obj.wait_time / max_wait) if c_obj else 0.0
                 
-                seat_information.append(urgency_feature)
-                seat_information.append(1.0 if (sx, sy) in my_target_seats else 0.0)
-                seat_information.append(1.0 if (sx, sy) in counter_target_seats else 0.0)
+                # フラグの数値化
+                is_held = 1.0 if order['status'] == 'held_by_me' else 0.0
+                is_ready = 1.0 if order['status'] == 'ready_at_counter' else 0.0
+                
+                # アクティブな注文にのみ、意味のある座標と値を与える
+                order_slots.extend([
+                    (tx - x) / self.grid_size, 
+                    (ty - y) / self.grid_size, 
+                    urgency, 
+                    is_held, 
+                    is_ready
+                ])
             else:
-                seat_information.extend([0.0, 0.0, 0.0, 0.0, 0.0])
+                # ★ 注文がない空き枠は、座標も含めて全て 0.0 にする（ノイズの排除）
+                order_slots.extend([0.0, 0.0, 0.0, 0.0, 0.0])
 
-        full_obs = np.concatenate([standard_obs, np.array(seat_information, dtype=np.float32)])
+        # 配列の結合
+        full_obs = np.concatenate([standard_obs, np.array(order_slots, dtype=np.float32)])
         agent_idx = self.possible_agents.index(agent)
         agent_id_feature = np.zeros(self.n_agents, dtype=np.float32)
         agent_id_feature[agent_idx] = 1.0
