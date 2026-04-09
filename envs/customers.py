@@ -1,3 +1,6 @@
+# ================================================
+# FILE: envs/customers.py
+# ================================================
 import numpy as np
 import random
 
@@ -12,6 +15,9 @@ class Customer:
         self.order_wait_time = np.random.randint(5, 15)
         self.has_ordered = False
         self.served = False
+        
+        # ★追加: 料理の注文種類（例: 1, 2, 3 の3種類）
+        self.order_type = np.random.randint(1, 4)
 
 class CustomerManager:
     """顧客生成・管理"""
@@ -77,10 +83,11 @@ class CustomerManager:
                     customer.has_ordered = True
                     if customer.seat_position not in active_orders:
                         active_orders.append(customer.seat_position)
-                        # 【修正】座席情報を料理データに付与する
+                        # 【修正】座席情報だけでなく、注文した料理の種類も付与する
                         kitchen_items.append({
                             'time_left': 5,
-                            'target_seat': customer.seat_position
+                            'target_seat': customer.seat_position,
+                            'food_type': customer.order_type # ★追加
                         })
             elif customer.state == 'ordered':
                 # 注文済み状態でも待ち時間を加算する
