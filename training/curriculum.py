@@ -1,30 +1,41 @@
 class Curriculum:
     """
     タイムアウト機能付き適応的カリキュラム（配膳数ベース）
-    修正版: 全範囲解禁スタートの簡略化カリキュラム
+    修正版: ドーナツ型（スライディング・ウィンドウ）マッピング強制カリキュラム
     """
     def __init__(self):
         self.current_stage_idx = 0
         self.stages = [
-            # Stage 1: 全範囲 (Full Random)
-            # 最初から距離制限なし（近距離も遠距離も解禁）
+            # Stage 1: 近距離での基礎マッピング (Basic Mapping)
             {
                 'layout': 'complex', 
                 'customers': True, 
-                'spawn_interval': 30,     # 適度な注文ペース
-                'min_customer_dist': 0,   # 全解禁
-                'description': 'Stage 1: Full Random Distribution',
-                'threshold': 10.0,        # 10皿でクリア
-                'timeout_episodes': 5000
-            },
-            # Stage 2: High Load (Final)
-            # 高負荷設定（注文ペースが速い）
-            {
-                'layout': 'complex', 
-                'customers': True, 
-                'spawn_interval': 15,
+                'spawn_interval': 30,
                 'min_customer_dist': 0,
-                'description': 'Stage 2: High Load Efficiency',
+                'max_customer_dist': 5,   # 近い客のみ出現
+                'description': 'Stage 1: Close-range Basic Mapping',
+                'threshold': 5.0,         # 目標5.0皿に引き下げ
+                'timeout_episodes': 10000 # 学習期間を延長
+            },
+            # Stage 2: 遠距離への強制マッピング (Donut / Forced Far Delivery)
+            {
+                'layout': 'complex', 
+                'customers': True, 
+                'spawn_interval': 30,
+                'min_customer_dist': 8,   # 手前の客を消去
+                'max_customer_dist': 15,  # 遠くの客のみ出現
+                'description': 'Stage 2: Forced Far-range Mapping (Donut)',
+                'threshold': 5.0,
+                'timeout_episodes': 10000
+            },
+            # Stage 3: 全範囲解禁・高負荷 (Full Range / High Load)
+            {
+                'layout': 'complex', 
+                'customers': True, 
+                'spawn_interval': 15,     # 注文ペースを上げる
+                'min_customer_dist': 0,
+                'max_customer_dist': float('inf'), # 距離制限を完全解除
+                'description': 'Stage 3: Full Range Integration (High Load)',
                 'threshold': float('inf'),
                 'timeout_episodes': float('inf')
             },
