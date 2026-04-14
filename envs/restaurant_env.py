@@ -355,6 +355,10 @@ class RestaurantEnv(ParallelEnv):
                 self.agent_directions[agent] = intended_directions[agent]
 
     def _process_interaction(self, agent, action, rewards):
+        # ★追加: アクション4(Interact)の時のみ料理の受け取りと配膳を行う
+        if action != 4:
+            return
+            
         x, y = self.agent_positions[agent]
         
         is_near_counter = False
