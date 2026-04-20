@@ -34,10 +34,9 @@ class RestaurantEnv(ParallelEnv):
         self.n_agents = len(self.possible_agents)
         
         self.max_seats_obs = 20 
-        self.num_food_types = 3 # ★追加: 料理の種類数
+        self.num_food_types = 3 
         
-        # 座席ごとの観測次元 (相対X, 相対Y, 緊急度, 自ターゲット, カウンターターゲット, 料理種類)
-        self.seat_obs_dim = self.max_seats_obs * 6 # ★修正: 次元を5から6に変更
+        self.seat_obs_dim = self.max_seats_obs * 6 
         
         self.num_view_directions = 8 
         self.view_dim = self.num_view_directions * self.local_obs_size 
@@ -49,9 +48,10 @@ class RestaurantEnv(ParallelEnv):
                 'collision': config.collision_penalty,
                 'step_cost': config.step_cost,
                 'coop_bonus_threshold': config.coop_bonus_threshold,
-                'max_wait_limit': config.max_wait_limit,
-                'wait_penalty_scale': config.wait_penalty_scale,
-                'urgency_bonus_scale': getattr(config, 'urgency_bonus_scale', 10.0)
+                'max_wait_limit': getattr(config, 'max_wait_limit', 50.0),
+                'wait_penalty_scale': getattr(config, 'wait_penalty_scale', 0.1),
+                'urgency_bonus_scale': getattr(config, 'urgency_bonus_scale', 10.0),
+                'holding_penalty': getattr(config, 'holding_penalty', -0.01)
             }
             self.max_steps = config.max_steps
             self.coop_factor = config.coop_factor
@@ -62,7 +62,8 @@ class RestaurantEnv(ParallelEnv):
                 'coop_bonus_threshold': 20.0,
                 'max_wait_limit': 50.0,
                 'wait_penalty_scale': 0.1,
-                'urgency_bonus_scale': 10.0
+                'urgency_bonus_scale': 10.0,
+                'holding_penalty': -0.01 
             }
             self.max_steps = 500
             self.coop_factor = coop_factor
@@ -74,8 +75,11 @@ class RestaurantEnv(ParallelEnv):
             agent: spaces.Box(low=-5, high=grid_size, shape=(obs_dim,), dtype=np.float32)
             for agent in self.possible_agents
         }
+        
+        # ★変更点: アクション空間を拡張 (移動4 + 待機1 + 料理種類数)
+        # num_food_types=3 の場合、Action 0~3が移動、Action 4,5,6がそれぞれの料理の受け取り要求となる
         self.action_spaces = {
-            agent: spaces.Discrete(5)
+            agent: spaces.Discrete(4 + self.num_food_types)
             for agent in self.possible_agents
         }
         
@@ -238,7 +242,6 @@ class RestaurantEnv(ParallelEnv):
         scale = self.reward_params.get('wait_penalty_scale', 0.1)
 
         total_wait_penalty = 0.0
-        
         for c in self.customer_manager.customers:
             if c.state == 'ordered':
                 urgency = (c.wait_time / max_wait) ** 2
@@ -355,10 +358,6 @@ class RestaurantEnv(ParallelEnv):
                 self.agent_directions[agent] = intended_directions[agent]
 
     def _process_interaction(self, agent, action, rewards):
-        # ★追加: アクション4(Interact)の時のみ料理の受け取りと配膳を行う
-        if action != 4:
-            return
-            
         x, y = self.agent_positions[agent]
         
         is_near_counter = False
@@ -367,38 +366,45 @@ class RestaurantEnv(ParallelEnv):
             if abs(x - cx) + abs(y - cy) <= 1:
                 is_near_counter = True
         
-        if is_near_counter and len(self.ready_dishes) > 0 and len(self.agent_inventory[agent]) < 4:
-            dish = self.ready_dishes.pop(0)
-            self.agent_inventory[agent].append(dish)
-            rewards[agent] += self.reward_params['pickup']
+        # ★変更点: アクション4, 5, 6 で特定の food_type の料理を要求
+        if 4 <= action < 4 + self.num_food_types and is_near_counter and len(self.agent_inventory[agent]) < 4:
+            requested_food_type = action - 4
+            
+            target_dish_idx = -1
+            for idx, dish in enumerate(self.ready_dishes):
+                if dish.get('food_type') == requested_food_type:
+                    target_dish_idx = idx
+                    break
+            
+            # 要求された種類の料理が厨房にあれば、受け取る
+            if target_dish_idx != -1:
+                dish = self.ready_dishes.pop(target_dish_idx)
+                self.agent_inventory[agent].append(dish)
+                rewards[agent] += self.reward_params['pickup']
         
+        # 配膳(Delivery)の処理
         if len(self.agent_inventory[agent]) > 0:
             for order_pos in self.active_orders[:]:
                 adjacent = get_adjacent_positions(order_pos)
                 if (x, y) in adjacent:
                     target_dish = None
                     
-                    # ターゲットとなる客を特定
                     target_customer = next((c for c in self.customer_manager.customers if c.seat_position == order_pos), None)
                     
                     for dish in self.agent_inventory[agent]:
-                        # ★修正: 配膳対象の席と、料理の種類が両方一致しているか判定
-                        if dish.get('target_seat') == order_pos and target_customer and dish.get('food_type') == target_customer.order_type:
+                        # ★変更点: target_seatの縛りをなくし、food_typeのみで判定 (料理の共通化)
+                        if target_customer and dish.get('food_type') == target_customer.order_type:
                             target_dish = dish
                             break
                     
                     if target_dish:
                         self.agent_inventory[agent].remove(target_dish)
                         
-                        current_wait_times = [
-                            c.wait_time for c in self.customer_manager.customers 
-                            if c.state == 'ordered'
-                        ]
-                        max_wait = max(current_wait_times) if current_wait_times else 1.0
+                        max_wait = self.reward_params.get('max_wait_limit', 50.0)
                         
                         urgency_score = 0.0
                         if target_customer:
-                            urgency_score = target_customer.wait_time / max_wait
+                            urgency_score = min((target_customer.wait_time / max_wait), 2.0)
                         
                         base_reward = self.reward_params['delivery']
                         bonus_scale = self.reward_params.get('urgency_bonus_scale', 10.0)
@@ -417,6 +423,10 @@ class RestaurantEnv(ParallelEnv):
                                 customer.wait_time = 0
                                 break
         
+        inventory_count = len(self.agent_inventory[agent])
+        if inventory_count > 0:
+            rewards[agent] += (self.reward_params.get('holding_penalty', -0.01) * inventory_count)
+            
         current_reward = rewards[agent]
         if current_reward >= self.reward_params['coop_bonus_threshold']:
             for other_agent in self.agents:
@@ -464,7 +474,6 @@ class RestaurantEnv(ParallelEnv):
                     local_obs.append(-1.0)
                     view_blocked = True
         
-        # --- 1. standard_obs の作成 ---
         standard_obs = np.zeros(len(local_obs) + 12, dtype=np.float32)
         standard_obs[:len(local_obs)] = local_obs
         
@@ -483,39 +492,37 @@ class RestaurantEnv(ParallelEnv):
         standard_obs[idx+10] = (cx - x) / self.grid_size
         standard_obs[idx+11] = (cy - y) / self.grid_size
 
-        # --- 2. スロット固定のオーダースロットの作成 (バグ修正箇所) ---
         order_slots = []
-        
-        active_wait_times = [c.wait_time for c in self.customer_manager.customers if c.state == 'ordered']
-        max_wait = max(active_wait_times) if active_wait_times else 1.0
+        max_wait_limit = self.reward_params.get('max_wait_limit', 50.0)
 
-        # ★修正: リストの追加削除ではなく、全座席(self.seats)を固定でループする
         for i in range(self.max_seats_obs):
             if i < len(self.seats):
                 seat_pos = self.seats[i]
                 tx, ty = seat_pos
                 
-                # その席にいる注文中の客を取得
                 c_obj = next((c for c in self.customer_manager.customers if c.seat_position == seat_pos and c.state == 'ordered'), None)
                 
-                urgency = (c_obj.wait_time / max_wait) if c_obj else 0.0
+                urgency = min((c_obj.wait_time / max_wait_limit), 2.0) if c_obj else 0.0
                 food_type = (c_obj.order_type / self.num_food_types) if c_obj else 0.0
                 
-                # 自分や厨房が、この席宛ての料理を持っているかチェック
-                is_held = 1.0 if any(d.get('target_seat') == seat_pos for d in self.agent_inventory[agent]) else 0.0
-                is_ready = 1.0 if any(d.get('target_seat') == seat_pos for d in self.ready_dishes) else 0.0
+                # ★変更点: is_held と is_ready の判定を target_seat ではなく food_type ベースに変更
+                if c_obj:
+                    target_food = c_obj.order_type
+                    is_held = 1.0 if any(d.get('food_type') == target_food for d in self.agent_inventory[agent]) else 0.0
+                    is_ready = 1.0 if any(d.get('food_type') == target_food for d in self.ready_dishes) else 0.0
+                else:
+                    is_held = 0.0
+                    is_ready = 0.0
                 
-                # 席ごとに常に同じ順番で6要素を追加
                 order_slots.extend([
                     (tx - x) / self.grid_size, 
                     (ty - y) / self.grid_size, 
                     urgency, 
                     is_held, 
                     is_ready,
-                    food_type # ★追加: 料理の種類
+                    food_type 
                 ])
             else:
-                # 席がない余りのスロットは0埋め (6要素)
                 order_slots.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
         full_obs = np.concatenate([standard_obs, np.array(order_slots, dtype=np.float32)])

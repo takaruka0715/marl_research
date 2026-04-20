@@ -6,13 +6,16 @@ class Config:
     """環境（RestaurantEnv）の基本設定"""
     
     delivery_reward: float = 10.0     # 400.0 は大きすぎるので 10.0 に
-    pickup_reward: float = 1.0        # 配膳の 1/10 程度が目安
+    pickup_reward: float = 1.0        # ★配膳の 1/5 程度（0だとスパースすぎるため少し残すのが推奨です）
     
     # ペナルティ系
     collision_penalty: float = -0.5   # 衝突は「痛い」と感じる程度
     step_cost: float = -0.01          # 移動コストは小さく（-0.1だと遠くのゴールを諦めがち）
     # wait_penalty: float = -0.05       # 顧客を待たせるペナルティ(静的)
     
+    # ★追加: 保持ペナルティ（料理を持っている間、毎ステップかかるペナルティ）
+    holding_penalty: float = -0.01
+
     # ★追加: 動的待機ペナルティの設定
     max_wait_limit: float = 50.0      # ペナルティ計算の基準となる許容時間（これを超えると急増）
     wait_penalty_scale: float = 0.0  # 動的ペナルティの強さ係数（今回は相対評価メインなら0でも可）
