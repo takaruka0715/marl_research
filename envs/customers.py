@@ -6,7 +6,7 @@ import random
 
 class Customer:
     """顧客クラス"""
-    def __init__(self, customer_id, position, seat_position):
+    def __init__(self, customer_id, position, seat_position, num_food_types=3):
         self.id = customer_id
         self.position = position
         self.seat_position = seat_position
@@ -16,14 +16,15 @@ class Customer:
         self.has_ordered = False
         self.served = False
         
-        # ★追加: 料理の注文種類（例: 1, 2, 3 の3種類）
-        self.order_type = np.random.randint(1, 4)
+        # 料理の注文種類（0, 1, 2... に対応）
+        self.order_type = np.random.randint(0, num_food_types)
 
 class CustomerManager:
     """顧客生成・管理"""
-    def __init__(self, enable_customers=True, spawn_interval=20):
+    def __init__(self, enable_customers=True, spawn_interval=20, num_food_types=3):
         self.enable_customers = enable_customers
         self.spawn_interval = spawn_interval
+        self.num_food_types = num_food_types
         self.customers = []
         self.customer_counter = 0
         self.steps_since_last_spawn = 0
@@ -31,18 +32,16 @@ class CustomerManager:
     def spawn_customer(self, entrance_pos, seats, counter_pos=None, min_dist_from_counter=0):
         """
         顧客を生成する。
-        min_dist_from_counter が指定されている場合、カウンターから一定距離以上離れた席のみを選択する。
         """
         if not self.enable_customers or len(seats) == 0:
             return
     
         occupied_seats = [c.seat_position for c in self.customers 
-                         if c.state in ['seated', 'ordered', 'waiting_for_food']]
+                         if c.state in ['seated', 'ordered', 'served']]
         
         candidate_seats = []
 
         if counter_pos is None:
-            # カウンター位置が渡されない場合は従来の挙動（空いている全席が候補）
             candidate_seats = [s for s in seats if s not in occupied_seats]
         else:
             cx, cy = counter_pos
@@ -50,17 +49,17 @@ class CustomerManager:
                 if seat in occupied_seats:
                     continue
                 
-                # マンハッタン距離を計算
                 sx, sy = seat
                 dist = abs(sx - cx) + abs(sy - cy)
                 
-                # 指定された距離以上離れている席のみ候補にする
+                # 指定された距離範囲内にある席のみを候補にする
                 if dist >= min_dist_from_counter:
                     candidate_seats.append(seat)
         
         if len(candidate_seats) > 0 and entrance_pos:
             seat = random.choice(candidate_seats)
-            customer = Customer(self.customer_counter, entrance_pos, seat)
+            # 現在のカリキュラム設定における料理の種類数を渡す
+            customer = Customer(self.customer_counter, entrance_pos, seat, num_food_types=self.num_food_types)
             self.customers.append(customer)
             self.customer_counter += 1
     
@@ -83,14 +82,14 @@ class CustomerManager:
                     customer.has_ordered = True
                     if customer.seat_position not in active_orders:
                         active_orders.append(customer.seat_position)
-                        # 【修正】座席情報だけでなく、注文した料理の種類も付与する
+                        
+                        # 座席情報だけでなく、注文した料理の種類も付与する
                         kitchen_items.append({
                             'time_left': 5,
                             'target_seat': customer.seat_position,
-                            'food_type': customer.order_type # ★追加
+                            'food_type': customer.order_type
                         })
             elif customer.state == 'ordered':
-                # 注文済み状態でも待ち時間を加算する
                 customer.wait_time += 1
             elif customer.state == 'served':
                 customer.wait_time += 1

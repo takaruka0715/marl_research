@@ -20,7 +20,7 @@ class RestaurantEnv(ParallelEnv):
     
     def __init__(self, grid_size=15, layout_type='basic', enable_customers=True,
                  customer_spawn_interval=20, local_obs_size=5, coop_factor=0.0, 
-                 min_customer_dist=0, max_customer_dist=float('inf'), config=None):
+                 min_customer_dist=0, max_customer_dist=float('inf'), num_food_types=3, config=None): # ★修正
         super().__init__()
         
         self.grid_size = grid_size
@@ -28,13 +28,13 @@ class RestaurantEnv(ParallelEnv):
         self.local_obs_size = local_obs_size
         
         self.min_customer_dist = min_customer_dist
-        self.max_customer_dist = max_customer_dist
+        self.max_customer_dist = max_customer_dist # ★追加
         self.possible_agents = ["agent_0", "agent_1"]
         self.agents = self.possible_agents[:]
         self.n_agents = len(self.possible_agents)
         
         self.max_seats_obs = 20 
-        self.num_food_types = 3 
+        self.num_food_types = num_food_types # ★修正
         
         self.seat_obs_dim = self.max_seats_obs * 6 
         
@@ -76,14 +76,13 @@ class RestaurantEnv(ParallelEnv):
             for agent in self.possible_agents
         }
         
-        # ★変更点: アクション空間を拡張 (移動4 + 待機1 + 料理種類数)
-        # num_food_types=3 の場合、Action 0~3が移動、Action 4,5,6がそれぞれの料理の受け取り要求となる
+        # ★変更点: アクション空間を拡張 (移動4 + 特定料理最大3)
         self.action_spaces = {
-            agent: spaces.Discrete(4 + self.num_food_types)
+            agent: spaces.Discrete(4 + 3) # ★常に最大(7)に固定
             for agent in self.possible_agents
         }
         
-        self.customer_manager = CustomerManager(enable_customers, customer_spawn_interval)
+        self.customer_manager = CustomerManager(enable_customers, customer_spawn_interval, num_food_types=self.num_food_types) # ★修正
         
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
@@ -214,7 +213,7 @@ class RestaurantEnv(ParallelEnv):
                 cx, cy = self.counter_pos
                 valid_seats = [
                     seat for seat in self.seats 
-                    if self.min_customer_dist <= (abs(seat[0] - cx) + abs(seat[1] - cy)) <= self.max_customer_dist
+                    if self.min_customer_dist <= (abs(seat[0] - cx) + abs(seat[1] - cy)) <= self.max_customer_dist # ★適用
                 ]
             
             if not valid_seats:
@@ -250,6 +249,7 @@ class RestaurantEnv(ParallelEnv):
 
         for agent in self.agents:
             rewards[agent] += total_wait_penalty
+            rewards[agent] += self.reward_params['step_cost'] # ★追加: 生存ペナルティとして一律適用
 
         self.num_moves += 1
         if self.num_moves >= self.max_steps:
@@ -300,7 +300,7 @@ class RestaurantEnv(ParallelEnv):
                 temp_x = max(0, min(self.grid_size - 1, curr_pos[0] + dx))
                 temp_y = max(0, min(self.grid_size - 1, curr_pos[1] + dy))
                 next_pos = (temp_x, temp_y)
-                rewards[agent] += self.reward_params['step_cost']
+                # rewards[agent] += self.reward_params['step_cost'] # ★削除: step()で一律処理に変更
                 
             elif action == 1: 
                 next_dir = (curr_dir + 1) % 4
@@ -367,7 +367,7 @@ class RestaurantEnv(ParallelEnv):
                 is_near_counter = True
         
         # ★変更点: アクション4, 5, 6 で特定の food_type の料理を要求
-        if 4 <= action < 4 + self.num_food_types and is_near_counter and len(self.agent_inventory[agent]) < 4:
+        if 4 <= action < 4 + 3 and is_near_counter and len(self.agent_inventory[agent]) < 4: # ★常に最大(3種類)まで処理対象
             requested_food_type = action - 4
             
             target_dish_idx = -1
@@ -505,7 +505,7 @@ class RestaurantEnv(ParallelEnv):
                 urgency = min((c_obj.wait_time / max_wait_limit), 2.0) if c_obj else 0.0
                 food_type = (c_obj.order_type / self.num_food_types) if c_obj else 0.0
                 
-                # ★変更点: is_held と is_ready の判定を target_seat ではなく food_type ベースに変更
+                # ★判定の共通化: この席の客が待っている種類の料理を自分が持っているか/厨房にあるか
                 if c_obj:
                     target_food = c_obj.order_type
                     is_held = 1.0 if any(d.get('food_type') == target_food for d in self.agent_inventory[agent]) else 0.0

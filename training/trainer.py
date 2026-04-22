@@ -1,3 +1,6 @@
+# ================================================
+# FILE: training/trainer.py
+# ================================================
 import numpy as np
 import torch
 import random
@@ -37,19 +40,22 @@ class Trainer:
     
     def train(self):
         """学習ループ実行"""
-        action_dim = 5 # ParallelEnvに変更したためアクション次元を確認 (Wait含むなら5)
+        action_dim = 4 + 3 # ★修正: アクション次元を最大値(7)に固定
         
         # 初期ステージ取得
         current_stage = self.curriculum.get_current_stage()
+        nft = current_stage.get('num_food_types', 1) # ★追加
         
         # 環境初期化
-        # 【修正】min_customer_dist をカリキュラムから取得して渡す
+        # 【修正】min_customer_dist, max_customer_dist, num_food_types を渡す
         current_env = RestaurantEnv(
             layout_type=current_stage['layout'],
             enable_customers=current_stage['customers'],
             customer_spawn_interval=current_stage['spawn_interval'],
             local_obs_size=5,
             min_customer_dist=current_stage.get('min_customer_dist', 0), # ★追加
+            max_customer_dist=current_stage.get('max_customer_dist', float('inf')), # ★追加
+            num_food_types=nft, # ★追加
             config=self.config
         )
 
@@ -123,14 +129,17 @@ class Trainer:
                 print(f"{'='*70}")
                 
                 current_stage = new_stage
+                nft = current_stage.get('num_food_types', 1) # ★追加
                 
-                # 【修正】ステージ移行時も min_customer_dist を渡す
+                # 【修正】ステージ移行時も設定を渡して環境を再構築
                 current_env = RestaurantEnv(
                     layout_type=current_stage['layout'],
                     enable_customers=current_stage['customers'],
                     customer_spawn_interval=current_stage['spawn_interval'],
                     local_obs_size=5,
                     min_customer_dist=current_stage.get('min_customer_dist', 0), # ★追加
+                    max_customer_dist=current_stage.get('max_customer_dist', float('inf')), # ★追加
+                    num_food_types=nft, # ★追加
                     coop_factor=self.config.coop_factor,
                     config=self.config
                 )
@@ -364,7 +373,7 @@ class Trainer:
                 r = rewards.get(agent_name, 0.0)
                 r_row.append(r)
                 episode_reward_sum += r
-                
+             
                 # 終了判定
                 term = terminations.get(agent_name, False)
                 trunc = truncations.get(agent_name, False)

@@ -1,3 +1,6 @@
+# ================================================
+# FILE: confs.py
+# ================================================
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -16,9 +19,9 @@ class Config:
     # ★追加: 保持ペナルティ（料理を持っている間、毎ステップかかるペナルティ）
     holding_penalty: float = -0.01
 
-    # ★追加: 動的待機ペナルティの設定
-    max_wait_limit: float = 50.0      # ペナルティ計算の基準となる許容時間（これを超えると急増）
-    wait_penalty_scale: float = 0.0  # 動的ペナルティの強さ係数（今回は相対評価メインなら0でも可）
+    # ★生存ペナルティの設定: 待機ペナルティの有効化
+    max_wait_limit: float = 50.0      # ペナルティ計算の基準となる許容時間
+    wait_penalty_scale: float = 0.1   # ★ 0.0 から 0.1 に変更。放置すると毎ステップ減点される。 [cite: 13]
 
     # ★追加: 相対評価（緊急度）ボーナス設定
     # 最も待たされている客を配膳した際の最大追加報酬
@@ -49,7 +52,7 @@ class AgentConfig:
     epsilon_decay: float = 0.99999
     epsilon_min: float = 0.05
 
-    # アルゴリズム選択フラグ
+    # アルゴリズム選択フラグ [cite: 15]
     use_vdn: bool = False
     use_qmix: bool = False           # QMIXフラグ
     use_tar2: bool = False           # TAR2を使用するか
@@ -62,7 +65,7 @@ class TrainingConfig:
     """学習ループ実行設定"""
     num_episodes: int = 20000
     use_shared_replay: bool = True
-    target_update_interval: int = 10
+    target_update_interval: int = 10 
     log_interval: int = 100
     save_interval: int = 1000        # モデル保存頻度
     
