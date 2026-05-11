@@ -84,6 +84,9 @@ class RestaurantEnv(ParallelEnv):
         
         self.customer_manager = CustomerManager(enable_customers, customer_spawn_interval, num_food_types=self.num_food_types) # ★修正
         
+        # ★デバッグ用: 全エピソードを通じた配膳ヒートマップ
+        self.total_delivery_heatmap = np.zeros((self.grid_size, self.grid_size), dtype=int)
+
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
         return self.observation_spaces[agent]
@@ -413,6 +416,10 @@ class RestaurantEnv(ParallelEnv):
                         rewards[agent] += total_reward
 
                         self.served_count[agent] += 1
+                        
+                        # ★デバッグ用: 配膳成功した席の座標をカウント
+                        self.total_delivery_heatmap[order_pos[0], order_pos[1]] += 1
+                        
                         if order_pos in self.active_orders:
                             self.active_orders.remove(order_pos)
                         

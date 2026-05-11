@@ -37,6 +37,20 @@ class Trainer:
         # TAR2用バッファ
         self.tar2 = None
         self.tar2_buffer = []
+
+        # ★ログディレクトリの作成
+        self.log_dir = "training_logs"
+        if not os.path.exists(self.log_dir):
+            os.makedirs(self.log_dir)
+
+    # ▼▼▼ ログ出力用メソッド追加 ▼▼▼
+    def _log(self, msg, stage_idx, to_console=False):
+        """ログをファイルに出力し、必要に応じてコンソールにも出力する"""
+        filepath = os.path.join(self.log_dir, f"stage_{stage_idx}.log")
+        with open(filepath, 'a', encoding='utf-8') as f:
+            f.write(msg + '\n')
+        if to_console:
+            print(msg)
     
     def train(self):
         """学習ループ実行"""
@@ -70,8 +84,12 @@ class Trainer:
         if self.use_qmix: algo_name = "QMIX"
         elif self.use_vdn: algo_name = "VDN"
 
-        print(f"State Dimension: {state_dim}")
-        print(f"System: {algo_name} | TAR2: {'ON' if self.use_tar2 else 'OFF'}")
+        stage_idx = self.curriculum.current_stage_idx
+        
+        msg1 = f"State Dimension: {state_dim}"
+        msg2 = f"System: {algo_name} | TAR2: {'ON' if self.use_tar2 else 'OFF'}"
+        self._log(msg1, stage_idx, to_console=True)
+        self._log(msg2, stage_idx, to_console=True)
         
         # TAR2 初期化
         if self.use_tar2:
@@ -103,9 +121,8 @@ class Trainer:
         
         stage_episode_count = 0
         
-        print(f"\n{'='*70}")
-        print(f"=== STARTING STAGE: {current_stage['description']} ===")
-        print(f"{'='*70}")
+        start_msg = f"\n{'='*70}\n=== STARTING STAGE: {current_stage['description']} ===\n{'='*70}"
+        self._log(start_msg, stage_idx, to_console=True)
         
         for episode in range(self.num_episodes):
             
@@ -126,16 +143,18 @@ class Trainer:
 
             if should_proceed:
                 new_stage = self.curriculum.get_current_stage()
-                print(f"\n{'='*70}")
-                print(f"🔄 CURRICULUM PROGRESSION")
-                print(f"   From: {current_stage['description']}")
-                print(f"   To:   {new_stage['description']}")
-                print(f"   Why:  {reason}")
-                print(f"   Perf: {current_served_performance:.1f}")
-                print(f"{'='*70}")
+                prog_msg = (f"\n{'='*70}\n"
+                            f"🔄 CURRICULUM PROGRESSION\n"
+                            f"   From: {current_stage['description']}\n"
+                            f"   To:   {new_stage['description']}\n"
+                            f"   Why:  {reason}\n"
+                            f"   Perf: {current_served_performance:.1f}\n"
+                            f"{'='*70}")
+                self._log(prog_msg, stage_idx, to_console=True)
                 
                 current_stage = new_stage
                 nft = current_stage.get('num_food_types', 1)
+                stage_idx = self.curriculum.current_stage_idx
                 
                 # 環境の再構築 (新しい料理設定と距離設定を反映)
                 current_env = RestaurantEnv(
@@ -232,7 +251,7 @@ class Trainer:
                     for agent_name in current_env.possible_agents:
                         self.agents[agent_name].update_target_network()
             
-            # ログ表示
+            # ログ出力
             if episode % 100 == 0:
                 avg_0 = self.avg_rewards['agent_0'][-1] if self.avg_rewards['agent_0'] else 0
                 avg_1 = self.avg_rewards['agent_1'][-1] if self.avg_rewards['agent_1'] else 0
@@ -251,12 +270,34 @@ class Trainer:
                 
                 tar2_msg = " | TAR2 Shaped" if self.use_tar2 else ""
                 
-                print(f"Ep {episode:4d} | StgEp: {stage_episode_count:4d} | "
-                      f"AvgReward: {team_avg_reward:6.1f} | "
-                      f"Total Served: {total_served:4.1f} (A0:{served_a0:.1f}, A1:{served_a1:.1f}) | "
-                      f"CollRate: {collision_rate:.3f} | Wait: {avg_wait:.1f} | "
-                      f"ε={eps:.3f}{tar2_msg}")
-        
+                # ★修正: 以前の使い慣れたフォーマットを復元し、コンソールとファイル両方に出力
+                log_msg = (f"Ep {episode:4d} | StgEp: {stage_episode_count:4d} | "
+                           f"AvgReward: {team_avg_reward:6.1f} | "
+                           f"Total Served: {total_served:4.1f} (A0:{served_a0:.1f}, A1:{served_a1:.1f}) | "
+                           f"CollRate: {collision_rate:.3f} | Wait: {avg_wait:.1f} | "
+                           f"ε={eps:.3f}{tar2_msg}")
+                self._log(log_msg, stage_idx, to_console=True)
+
+                # ★デバッグ用: 100エピソードごとに配膳ヒートマップをファイルのみに描画
+                heatmap_msg = "\n=== Delivery Heatmap (Total Served Count per Seat) ===\n"
+                for y in range(current_env.grid_size):
+                    row_str = ""
+                    for x in range(current_env.grid_size):
+                        count = current_env.total_delivery_heatmap[x, y]
+                        if count > 0:
+                            row_str += f"[{count:4d}] " # 配膳実績あり
+                        elif current_env.counter_pos and (x, y) == current_env.counter_pos:
+                            row_str += " [Cntr] "     # カウンター
+                        elif (x, y) in current_env.obstacles:
+                            row_str += "  XXXX  "     # 障害物・壁
+                        elif (x, y) in current_env.seats:
+                            row_str += " [   0] "     # 席（まだ一度も配膳されていない）
+                        else:
+                            row_str += "   ..   "     # 通路
+                    heatmap_msg += row_str + "\n"
+                heatmap_msg += "======================================================\n"
+                self._log(heatmap_msg, stage_idx, to_console=False)
+
         # ======================================================================
         # ▼▼▼ 追加機能: 学習終了時に最良指標（移動平均）を出力 ▼▼▼
         # ======================================================================
@@ -289,15 +330,16 @@ class Trainer:
         best_col_rate_ma = get_best_ma(self.collision_rates, mode='min')
         best_wait_time_ma = get_best_ma(self.avg_wait_times, mode='min')
 
-        # 4. コンソール出力
-        print(f"\n{'='*70}")
-        print(f"📊 FINAL PERFORMANCE SUMMARY (Best Moving Avg over 50 eps)")
-        print(f"{'='*70}")
-        print(f"  ★ Best Team Reward:       {best_reward_ma:8.2f}")
-        print(f"  ★ Best Total Served:      {best_served_ma:8.2f} dishes")
-        print(f"  ★ Lowest Collision Rate:  {best_col_rate_ma:8.4f}")
-        print(f"  ★ Lowest Avg Wait Time:   {best_wait_time_ma:8.2f} steps")
-        print(f"{'='*70}\n")
+        # 4. ログ出力 (ターミナルにも表示)
+        final_msg = (f"\n{'='*70}\n"
+                     f"📊 FINAL PERFORMANCE SUMMARY (Best Moving Avg over 50 eps)\n"
+                     f"{'='*70}\n"
+                     f"  ★ Best Team Reward:       {best_reward_ma:8.2f}\n"
+                     f"  ★ Best Total Served:      {best_served_ma:8.2f} dishes\n"
+                     f"  ★ Lowest Collision Rate:  {best_col_rate_ma:8.4f}\n"
+                     f"  ★ Lowest Avg Wait Time:   {best_wait_time_ma:8.2f} steps\n"
+                     f"{'='*70}\n")
+        self._log(final_msg, stage_idx, to_console=True)
 
         # ======================================================================
 
