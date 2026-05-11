@@ -40,22 +40,27 @@ class Trainer:
     
     def train(self):
         """学習ループ実行"""
-        action_dim = 4 + 3 # ★修正: アクション次元を最大値(7)に固定
+        
+        # ★知識継承のための重要修正: 
+        # アクション次元を最初から最大値（移動4 + 料理種類3 = 7）に固定します。
+        # これにより、ステージ移行時にネットワークの構造を変える必要がなくなります。
+        max_food_types = 3
+        action_dim = 4 + max_food_types 
         
         # 初期ステージ取得
         current_stage = self.curriculum.get_current_stage()
-        nft = current_stage.get('num_food_types', 1) # ★追加
+        # 環境内の客が注文する種類数はカリキュラムに従う
+        nft = current_stage.get('num_food_types', 1)
         
         # 環境初期化
-        # 【修正】min_customer_dist, max_customer_dist, num_food_types を渡す
         current_env = RestaurantEnv(
             layout_type=current_stage['layout'],
             enable_customers=current_stage['customers'],
             customer_spawn_interval=current_stage['spawn_interval'],
             local_obs_size=5,
-            min_customer_dist=current_stage.get('min_customer_dist', 0), # ★追加
-            max_customer_dist=current_stage.get('max_customer_dist', float('inf')), # ★追加
-            num_food_types=nft, # ★追加
+            min_customer_dist=current_stage.get('min_customer_dist', 0),
+            max_customer_dist=current_stage.get('max_customer_dist', float('inf')),
+            num_food_types=nft, 
             config=self.config
         )
 
@@ -76,6 +81,7 @@ class Trainer:
         # バッファ・エージェント初期化
         shared_buffer = SharedReplayBuffer(capacity=50000) if self.use_shared_replay else None
         
+        # --- エージェントの初期構築 (ここで1回だけ行う) ---
         if self.use_qmix:
             global_state_dim = state_dim * 2 
             self.agents = {
@@ -90,7 +96,7 @@ class Trainer:
                 agent_name: DQNAgent(state_dim, action_dim, shared_buffer=shared_buffer) 
                 for agent_name in current_env.possible_agents
             }
-        
+      
         self.episode_rewards = {agent: [] for agent in current_env.possible_agents}
         self.avg_rewards = {agent: [] for agent in current_env.possible_agents}
         self.served_stats = {agent: [] for agent in current_env.possible_agents}
@@ -129,21 +135,27 @@ class Trainer:
                 print(f"{'='*70}")
                 
                 current_stage = new_stage
-                nft = current_stage.get('num_food_types', 1) # ★追加
+                nft = current_stage.get('num_food_types', 1)
                 
-                # 【修正】ステージ移行時も設定を渡して環境を再構築
+                # 環境の再構築 (新しい料理設定と距離設定を反映)
                 current_env = RestaurantEnv(
                     layout_type=current_stage['layout'],
                     enable_customers=current_stage['customers'],
                     customer_spawn_interval=current_stage['spawn_interval'],
                     local_obs_size=5,
-                    min_customer_dist=current_stage.get('min_customer_dist', 0), # ★追加
-                    max_customer_dist=current_stage.get('max_customer_dist', float('inf')), # ★追加
-                    num_food_types=nft, # ★追加
+                    min_customer_dist=current_stage.get('min_customer_dist', 0),
+                    max_customer_dist=current_stage.get('max_customer_dist', float('inf')),
+                    num_food_types=nft,
                     coop_factor=self.config.coop_factor,
                     config=self.config
                 )
+                
+                # ★重要：エージェントの再初期化（self.agents = ...）を削除しました。
+                # これにより、前のステージで得た「歩き方」や「配膳の概念」を保持したまま
+                # 新しい料理（Action 5, 6等）の学習に移行できます。
+                
                 stage_episode_count = 0
+                # ステージ移行時は少し探索率を戻して、新しい要素（新しい料理）を学ばせる
                 reset_epsilon = 0.8
                 
                 if self.use_vdn:
@@ -168,23 +180,17 @@ class Trainer:
                 self.avg_rewards[agent_name].append(np.mean(self.episode_rewards[agent_name][-50:]))
                 self.served_stats[agent_name].append(current_env.served_count[agent_name])
 
-            # ====================================================
-            # 【追加】評価指標の計算と記録
-            # ====================================================
-            # 1. 衝突率 (Collision Rate)
+            # --- 評価指標の計算と記録 ---
             total_collisions = sum(current_env.collision_count.values())
-            # 延べステップ数 = ステップ数 * エージェント数
             total_agent_steps = current_env.num_moves * len(current_env.possible_agents)
             collision_rate = total_collisions / total_agent_steps if total_agent_steps > 0 else 0.0
             self.collision_rates.append(collision_rate)
 
-            # 2. 平均待ち時間 (Average Wait Time)
             if hasattr(current_env, 'completed_wait_times') and len(current_env.completed_wait_times) > 0:
                 avg_wait = np.mean(current_env.completed_wait_times)
             else:
                 avg_wait = 0.0
             self.avg_wait_times.append(avg_wait)
-            # ====================================================
 
             # --- 2. TAR2 報酬再計算フェーズ ---
             shaped_rewards = None
@@ -326,6 +332,9 @@ class Trainer:
             step_actions_dict = {}
             step_states_list = []
             
+            # ▼▼▼ Action Maskingの取得 ▼▼▼
+            avail_actions = env.get_avail_actions()
+            
             # 1. 全エージェントの行動決定 (同時)
             # 観測データの準備
             for agent_name in agent_ids:
@@ -337,13 +346,16 @@ class Trainer:
 
             if self.use_vdn:
                 # VDN: まとめて行動選択
-                step_actions_dict = self.agents['vdn'].select_actions(observations)
+                step_actions_dict = self.agents['vdn'].select_actions(observations, avail_actions=avail_actions)
             elif getattr(self, 'use_qmix', False):
-                step_actions_dict = self.agents['qmix'].select_actions(observations)
+                step_actions_dict = self.agents['qmix'].select_actions(observations, avail_actions=avail_actions)
             else:
                 # Independent DQN
                 for agent_name in env.agents:
-                    step_actions_dict[agent_name] = self.agents[agent_name].select_action(observations[agent_name])
+                    step_actions_dict[agent_name] = self.agents[agent_name].select_action(
+                        observations[agent_name],
+                        avail_actions=avail_actions[agent_name]
+                    )
             
             # 2. 環境を1ステップ進める (同時更新)
             next_observations, rewards, terminations, truncations, infos = env.step(step_actions_dict)
@@ -473,7 +485,7 @@ class Trainer:
                 agent.save_model(path)
                 print(f"Saved {agent_name} model to {path}")
 
-    # ▼▼▼ 追加: 統計テストモード用メソッド ▼▼▼
+    # ▼▼▼ 統計テストモード用メソッド ▼▼▼
     def evaluate(self, env, agents, num_episodes=100):
         """
         学習済みモデルを用いて指定エピソード数だけ実行し、統計指標を出力する

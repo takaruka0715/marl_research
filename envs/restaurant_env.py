@@ -400,11 +400,11 @@ class RestaurantEnv(ParallelEnv):
                     if target_dish:
                         self.agent_inventory[agent].remove(target_dish)
                         
-                        max_wait = self.reward_params.get('max_wait_limit', 50.0)
+                        max_wait_limit = self.reward_params.get('max_wait_limit', 50.0)
                         
                         urgency_score = 0.0
                         if target_customer:
-                            urgency_score = min((target_customer.wait_time / max_wait), 2.0)
+                            urgency_score = min((target_customer.wait_time / max_wait_limit), 2.0)
                         
                         base_reward = self.reward_params['delivery']
                         bonus_scale = self.reward_params.get('urgency_bonus_scale', 10.0)
@@ -531,3 +531,33 @@ class RestaurantEnv(ParallelEnv):
         agent_id_feature[agent_idx] = 1.0
 
         return np.concatenate([full_obs, agent_id_feature])
+
+    # ▼▼▼ Action Masking用メソッド追加 ▼▼▼
+    def get_avail_actions(self):
+        """
+        各エージェントの有効な行動マスクを取得する
+        戻り値: dict {agent_name: [1, 1, 1, 1, 0, 0, 0] のようなリスト}
+        """
+        avail_actions = {}
+        for agent in self.possible_agents:
+            if agent not in self.agent_positions:
+                avail_actions[agent] = [1] * self.action_space(agent).n
+                continue
+                
+            avail = [1] * self.action_space(agent).n
+            x, y = self.agent_positions[agent]
+            is_near_counter = False
+            
+            if self.counter_pos:
+                cx, cy = self.counter_pos
+                if abs(x - cx) + abs(y - cy) <= 1:
+                    is_near_counter = True
+            
+            # カウンターの隣にいない場合、Action 4, 5, 6 (料理受取) を無効化
+            if not is_near_counter:
+                for a in range(4, 4 + 3):
+                    avail[a] = 0
+            
+            avail_actions[agent] = avail
+            
+        return avail_actions
