@@ -303,7 +303,6 @@ class RestaurantEnv(ParallelEnv):
                 temp_x = max(0, min(self.grid_size - 1, curr_pos[0] + dx))
                 temp_y = max(0, min(self.grid_size - 1, curr_pos[1] + dy))
                 next_pos = (temp_x, temp_y)
-                # rewards[agent] += self.reward_params['step_cost'] # ★削除: step()で一律処理に変更
                 
             elif action == 1: 
                 next_dir = (curr_dir + 1) % 4
@@ -369,8 +368,7 @@ class RestaurantEnv(ParallelEnv):
             if abs(x - cx) + abs(y - cy) <= 1:
                 is_near_counter = True
         
-        # ★変更点: アクション4, 5, 6 で特定の food_type の料理を要求
-        if 4 <= action < 4 + 3 and is_near_counter and len(self.agent_inventory[agent]) < 4: # ★常に最大(3種類)まで処理対象
+        if 4 <= action < 4 + 3 and is_near_counter and len(self.agent_inventory[agent]) < 4:
             requested_food_type = action - 4
             
             target_dish_idx = -1
@@ -379,13 +377,11 @@ class RestaurantEnv(ParallelEnv):
                     target_dish_idx = idx
                     break
             
-            # 要求された種類の料理が厨房にあれば、受け取る
             if target_dish_idx != -1:
                 dish = self.ready_dishes.pop(target_dish_idx)
                 self.agent_inventory[agent].append(dish)
                 rewards[agent] += self.reward_params['pickup']
         
-        # 配膳(Delivery)の処理
         if len(self.agent_inventory[agent]) > 0:
             for order_pos in self.active_orders[:]:
                 adjacent = get_adjacent_positions(order_pos)
@@ -395,7 +391,6 @@ class RestaurantEnv(ParallelEnv):
                     target_customer = next((c for c in self.customer_manager.customers if c.seat_position == order_pos), None)
                     
                     for dish in self.agent_inventory[agent]:
-                        # ★変更点: target_seatの縛りをなくし、food_typeのみで判定 (料理の共通化)
                         if target_customer and dish.get('food_type') == target_customer.order_type:
                             target_dish = dish
                             break
@@ -406,18 +401,29 @@ class RestaurantEnv(ParallelEnv):
                         max_wait_limit = self.reward_params.get('max_wait_limit', 50.0)
                         
                         urgency_score = 0.0
+                        distance_bonus = 0.0
+                        
                         if target_customer:
-                            urgency_score = min((target_customer.wait_time / max_wait_limit), 2.0)
-                        
+                            # ① ボーナスの上限(min)を撤廃。待たせた分だけ青天井でボーナスが増える
+                            urgency_score = target_customer.wait_time / max_wait_limit
+                            
+                            # ② 物理的な「遠距離手当」を導入 (カウンターからのマンハッタン距離)
+                            cx, cy = self.counter_pos if self.counter_pos else (7, 1)
+                            tx, ty = target_customer.seat_position
+                            dist_from_counter = abs(tx - cx) + abs(ty - cy)
+                            
+                            # 1歩遠いごとに基本給に +5.0 点（割引率の減衰を相殺する）
+                            distance_bonus = dist_from_counter * 5.0
+
                         base_reward = self.reward_params['delivery']
-                        bonus_scale = self.reward_params.get('urgency_bonus_scale', 10.0)
+                        bonus_scale = self.reward_params.get('urgency_bonus_scale', 10.0) # confs.pyで大きく設定していればそのまま適用
                         
-                        total_reward = base_reward + (urgency_score * bonus_scale)
+                        # 遠いほど、そして待たせているほど爆発的な報酬が入るようにする
+                        total_reward = base_reward + distance_bonus + (urgency_score * bonus_scale)
                         rewards[agent] += total_reward
 
                         self.served_count[agent] += 1
                         
-                        # ★デバッグ用: 配膳成功した席の座標をカウント
                         self.total_delivery_heatmap[order_pos[0], order_pos[1]] += 1
                         
                         if order_pos in self.active_orders:
@@ -512,7 +518,6 @@ class RestaurantEnv(ParallelEnv):
                 urgency = min((c_obj.wait_time / max_wait_limit), 2.0) if c_obj else 0.0
                 food_type = (c_obj.order_type / self.num_food_types) if c_obj else 0.0
                 
-                # ★判定の共通化: この席の客が待っている種類の料理を自分が持っているか/厨房にあるか
                 if c_obj:
                     target_food = c_obj.order_type
                     is_held = 1.0 if any(d.get('food_type') == target_food for d in self.agent_inventory[agent]) else 0.0
@@ -539,7 +544,6 @@ class RestaurantEnv(ParallelEnv):
 
         return np.concatenate([full_obs, agent_id_feature])
 
-    # ▼▼▼ Action Masking用メソッド追加 ▼▼▼
     def get_avail_actions(self):
         """
         各エージェントの有効な行動マスクを取得する
@@ -560,7 +564,6 @@ class RestaurantEnv(ParallelEnv):
                 if abs(x - cx) + abs(y - cy) <= 1:
                     is_near_counter = True
             
-            # カウンターの隣にいない場合、Action 4, 5, 6 (料理受取) を無効化
             if not is_near_counter:
                 for a in range(4, 4 + 3):
                     avail[a] = 0

@@ -89,7 +89,6 @@ class QMIXAgent:
         self.q_network.eval()
         self.mixer.eval()
 
-    # ★追加：状態テンソルから自己完結でマスクを計算するヘルパー
     def _apply_action_mask(self, q_values, states):
         """状態のインデックス50, 51からカウンターとの距離を逆算し、離れていれば受取をマスク"""
         dx = states[:, 50] * 15.0
@@ -99,7 +98,6 @@ class QMIXAgent:
         q_values[invalid_mask, 4:] = -1e9
         return q_values
 
-    # ★変更：**kwargs を受け取ることで trainer.py の変更を吸収
     def select_actions(self, states_dict, **kwargs):
         actions = {}
         for agent_name, state in states_dict.items():
@@ -130,7 +128,18 @@ class QMIXAgent:
         if len(self.memory) < self.batch_size:
             return 0
         
-        batch = self.memory.sample(self.batch_size) if self.use_shared_buffer else random.sample(self.memory, self.batch_size)
+        # ★PER用のサンプリング (beta=0.4 は学習初期の標準値)
+        if self.use_shared_buffer and hasattr(self.memory, 'update_priorities'):
+            batch, indices, weights = self.memory.sample(self.batch_size, beta=0.4)
+            weights_tensor = torch.FloatTensor(weights).to(self.device).unsqueeze(1)
+        else:
+            if hasattr(self.memory, 'sample'):
+                batch = self.memory.sample(self.batch_size)
+            else:
+                batch = random.sample(self.memory, self.batch_size)
+            indices = None
+            weights_tensor = torch.ones(self.batch_size, 1).to(self.device)
+
         s_dicts, a_dicts, r_dicts, ns_dicts, d_dicts, g_states, g_ns_states = zip(*batch)
 
         agent_names = list(s_dicts[0].keys())
@@ -153,7 +162,7 @@ class QMIXAgent:
             ns_list = [torch.FloatTensor(np.array([d[agent] for d in ns_dicts])).to(self.device) for agent in agent_names]
             target_q_locals = self.target_network(ns_list)
             
-            # ★最重要修正：ターゲットQ値にもマスクを適用し、過大評価の爆発を防ぐ
+            # ★ターゲットQ値にもマスクを適用し、過大評価の爆発を防ぐ
             for i in range(self.num_agents):
                 target_q_locals[i] = self._apply_action_mask(target_q_locals[i], ns_list[i])
             
@@ -167,11 +176,23 @@ class QMIXAgent:
             
             y_target = total_rewards + (1 - all_dones) * self.gamma * target_q_tot
 
-        loss = nn.SmoothL1Loss()(q_tot, y_target)
+        # ★重要: 重み付きLossの計算と優先度の更新
+        loss_elements = F.smooth_l1_loss(q_tot, y_target, reduction='none')
+        loss = (weights_tensor * loss_elements).mean()
+        
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.params, max_norm=10)
         self.optimizer.step()
+
+        # ★TD誤差を使ってバッファの優先度を更新 (誤差が大きい=驚きが大きい=復習すべき)
+        if indices is not None:
+            td_errors = torch.abs(q_tot - y_target).detach().cpu().numpy().squeeze()
+            # 微小な定数 1e-6 を足して優先度が完全に0になるのを防ぐ
+            # bs=1 の場合などのため1次元配列を保証する
+            if td_errors.ndim == 0:
+                td_errors = np.array([td_errors])
+            self.memory.update_priorities(indices, td_errors + 1e-6)
 
         self.update_counter += 1
         if self.update_counter % 100 == 0: self.scheduler.step()

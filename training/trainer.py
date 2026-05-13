@@ -6,7 +6,8 @@ import torch
 import random
 import os
 from envs import RestaurantEnv
-from agents import DQNAgent, VDNAgent, SharedReplayBuffer
+from agents import DQNAgent, VDNAgent
+from agents.replay_buffer import PrioritizedReplayBuffer  # ★変更: PERバッファを直接インポート
 from agents.tar2 import TAR2Network, collate_trajectories
 from .curriculum import Curriculum
 from agents.qmix import QMIXAgent
@@ -97,7 +98,8 @@ class Trainer:
             self.tar2_buffer = []
 
         # バッファ・エージェント初期化
-        shared_buffer = SharedReplayBuffer(capacity=50000) if self.use_shared_replay else None
+        # ★変更: SharedReplayBuffer から PrioritizedReplayBuffer に変更
+        shared_buffer = PrioritizedReplayBuffer(capacity=50000) if self.use_shared_replay else None
         
         # --- エージェントの初期構築 (ここで1回だけ行う) ---
         if self.use_qmix:
@@ -456,7 +458,7 @@ class Trainer:
             final_s_row.append(np.zeros(s_dim))
         states_seq.append(np.array(final_s_row))
         
-        # global state も同様に最後を追加
+        # global state も少し追加
         s_dim = env.observation_space(agent_ids[0]).shape[0]
         final_global = np.zeros(s_dim * len(agent_ids))
         global_states_seq.append(final_global)
