@@ -39,10 +39,21 @@ class Trainer:
         self.tar2 = None
         self.tar2_buffer = []
 
-        # ★ログディレクトリの作成
-        self.log_dir = "training_logs"
+        # ★ログディレクトリの作成 (実行場所に依存しない絶対パスに変更)
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.log_dir = os.path.join(project_root, "training_logs")
+        
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
+        else:
+            # ★追加: 新規学習スタート時に、以前の古いログ (.log) を全て削除してリセットする
+            for filename in os.listdir(self.log_dir):
+                if filename.endswith(".log"):
+                    file_path = os.path.join(self.log_dir, filename)
+                    os.remove(file_path)
+            
+        # 起動時にターミナルへ絶対パスを出力して迷子を防ぐ
+        print(f"\n[INFO] ログディレクトリを初期化しました: {self.log_dir}\n")
 
     # ▼▼▼ ログ出力用メソッド追加 ▼▼▼
     def _log(self, msg, stage_idx, to_console=False):
