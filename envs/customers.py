@@ -28,13 +28,31 @@ class CustomerManager:
         self.customers = []
         self.customer_counter = 0
         self.steps_since_last_spawn = 0
+
+        # ★追加: 難易度均等サンプリング用のカーソル
+        # easy -> medium -> hard -> easy ... のようにカテゴリを回す。
+        self.difficulty_spawn_cursor = 0
     
-    def spawn_customer(self, entrance_pos, seats, counter_pos=None, min_dist_from_counter=0):
+    def spawn_customer(self, entrance_pos, seats, counter_pos=None, min_dist_from_counter=0,
+                       seat_difficulties=None, spawn_mode='random',
+                       difficulty_categories=None):
         """
         顧客を生成する。
+
+        Args:
+            entrance_pos: 顧客の入口座標
+            seats: 候補座席リスト
+            counter_pos: カウンター座標
+            min_dist_from_counter: 従来のマンハッタン距離フィルタ
+            seat_difficulties: {seat: 'easy'|'medium'|'hard'} の辞書
+            spawn_mode: 'random' または 'difficulty_balanced'
+            difficulty_categories: 難易度均等サンプリングで使うカテゴリ順
+
+        Returns:
+            Customer or None: 生成された顧客。生成されなかった場合は None。
         """
         if not self.enable_customers or len(seats) == 0:
-            return
+            return None
     
         occupied_seats = [c.seat_position for c in self.customers 
                          if c.state in ['seated', 'ordered', 'served']]
@@ -56,12 +74,45 @@ class CustomerManager:
                 if dist >= min_dist_from_counter:
                     candidate_seats.append(seat)
         
-        if len(candidate_seats) > 0 and entrance_pos:
+        if len(candidate_seats) == 0 or not entrance_pos:
+            return None
+
+        # ★追加: Stage4 用。難易度カテゴリごとにできるだけ均等に客を出す。
+        if spawn_mode == 'difficulty_balanced' and seat_difficulties:
+            if difficulty_categories is None:
+                difficulty_categories = ['easy', 'medium', 'hard']
+
+            # 空カテゴリを避けるため、候補席が存在するカテゴリだけを対象にする。
+            available_categories = []
+            for category in difficulty_categories:
+                category_seats = [
+                    seat for seat in candidate_seats
+                    if seat_difficulties.get(seat) == category
+                ]
+                if category_seats:
+                    available_categories.append(category)
+
+            if available_categories:
+                category = available_categories[
+                    self.difficulty_spawn_cursor % len(available_categories)
+                ]
+                self.difficulty_spawn_cursor += 1
+
+                category_candidates = [
+                    seat for seat in candidate_seats
+                    if seat_difficulties.get(seat) == category
+                ]
+                seat = random.choice(category_candidates)
+            else:
+                seat = random.choice(candidate_seats)
+        else:
             seat = random.choice(candidate_seats)
-            # 現在のカリキュラム設定における料理の種類数を渡す
-            customer = Customer(self.customer_counter, entrance_pos, seat, num_food_types=self.num_food_types)
-            self.customers.append(customer)
-            self.customer_counter += 1
+
+        # 現在のカリキュラム設定における料理の種類数を渡す
+        customer = Customer(self.customer_counter, entrance_pos, seat, num_food_types=self.num_food_types)
+        self.customers.append(customer)
+        self.customer_counter += 1
+        return customer
     
     def update_customers(self):
         """顧客状態更新と注文管理"""

@@ -92,7 +92,7 @@ def main():
         )
 
         state_dim = env.observation_space('agent_0').shape[0]
-        action_dim = 5 
+        action_dim = env.action_space('agent_0').n
         
         # 2. エージェントの初期化とロード (evalと同じロジック)
         agents = {}
@@ -161,7 +161,7 @@ def main():
         )
         
         state_dim = env.observation_space('agent_0').shape[0]
-        action_dim = 5 # envs/restaurant_env.py で spaces.Discrete(5) になっているため
+        action_dim = env.action_space('agent_0').n
         
         # 2. エージェントの初期化とロード
         agents = {}

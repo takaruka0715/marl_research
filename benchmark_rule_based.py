@@ -75,13 +75,13 @@ def run_benchmark(num_episodes=100, layout='complex'):
 
     # 結果出力
     print(f"\n\n{'='*60}")
-    print(f"📊 RULE-BASED AGENT RESULTS (Average over {num_episodes} eps)")
+    print(f"[SUMMARY] RULE-BASED AGENT RESULTS (Average over {num_episodes} eps)")
     print(f"{'='*60}")
     
-    print(f"  ★ Average Reward:       {np.mean(total_rewards):8.2f} ± {np.std(total_rewards):.2f}")
-    print(f"  ★ Average Served:       {np.mean(served_counts):8.2f} ± {np.std(served_counts):.2f} dishes")
-    print(f"  ★ Collision Rate:       {np.mean(collision_rates):8.4f} ± {np.std(collision_rates):.4f}")
-    print(f"  ★ Avg Wait Time:        {np.mean(wait_times):8.2f} ± {np.std(wait_times):.2f} steps")
+    print(f"  - Average Reward:       {np.mean(total_rewards):8.2f} +/- {np.std(total_rewards):.2f}")
+    print(f"  - Average Served:       {np.mean(served_counts):8.2f} +/- {np.std(served_counts):.2f} dishes")
+    print(f"  - Collision Rate:       {np.mean(collision_rates):8.4f} +/- {np.std(collision_rates):.4f}")
+    print(f"  - Avg Wait Time:        {np.mean(wait_times):8.2f} +/- {np.std(wait_times):.2f} steps")
     print(f"{'='*60}\n")
 
 if __name__ == "__main__":

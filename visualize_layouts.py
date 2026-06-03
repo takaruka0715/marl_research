@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
 import os
 from envs.restaurant_env import RestaurantEnv
-from config import Config
+from confs import Config
 
 def save_layout_image(layout_type, grid_size=15, filename=None):
     """指定されたレイアウトの初期状態を画像として保存する"""

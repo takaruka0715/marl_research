@@ -20,7 +20,8 @@ class RestaurantEnv(ParallelEnv):
     
     def __init__(self, grid_size=15, layout_type='basic', enable_customers=True,
                  customer_spawn_interval=20, local_obs_size=5, coop_factor=0.0, 
-                 min_customer_dist=0, max_customer_dist=float('inf'), num_food_types=3, config=None): # ★修正
+                 min_customer_dist=0, max_customer_dist=float('inf'), num_food_types=3, config=None,
+                 spawn_mode='random', difficulty_categories=None, difficulty_thresholds=None): # ★修正
         super().__init__()
         
         self.grid_size = grid_size
@@ -29,6 +30,11 @@ class RestaurantEnv(ParallelEnv):
         
         self.min_customer_dist = min_customer_dist
         self.max_customer_dist = max_customer_dist # ★追加
+
+        # ★追加: Stage4で到達難易度カテゴリごとに均等に顧客を出すための設定
+        self.spawn_mode = spawn_mode
+        self.difficulty_categories = difficulty_categories or ['easy', 'medium', 'hard']
+        self.difficulty_thresholds = difficulty_thresholds
         self.possible_agents = ["agent_0", "agent_1"]
         self.agents = self.possible_agents[:]
         self.n_agents = len(self.possible_agents)
@@ -87,6 +93,11 @@ class RestaurantEnv(ParallelEnv):
         # ★デバッグ用: 全エピソードを通じた配膳ヒートマップ
         self.total_delivery_heatmap = np.zeros((self.grid_size, self.grid_size), dtype=int)
 
+        # ★追加: 出現数・注文数・未配膳数も記録し、席別成功率を評価できるようにする
+        self.total_customer_spawn_heatmap = np.zeros((self.grid_size, self.grid_size), dtype=int)
+        self.total_order_heatmap = np.zeros((self.grid_size, self.grid_size), dtype=int)
+        self.total_unserved_order_heatmap = np.zeros((self.grid_size, self.grid_size), dtype=int)
+
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
         return self.observation_spaces[agent]
@@ -131,6 +142,276 @@ class RestaurantEnv(ParallelEnv):
         
         return reachable
 
+
+    def _compute_shortest_path_from_counter(self):
+        """
+        カウンター隣接マスを始点として、障害物・座席・カウンターを避けた最短距離をBFSで計算する。
+        座席そのものは進入不可なので、配膳可能な「座席の隣接マス」までの距離を後で参照する。
+        """
+        distances = {}
+        if self.counter_pos is None:
+            return distances
+
+        blocked = set(self.obstacles) | set(self.seats)
+        blocked.add(self.counter_pos)
+
+        start_positions = [
+            pos for pos in get_adjacent_positions(self.counter_pos)
+            if (0 <= pos[0] < self.grid_size and
+                0 <= pos[1] < self.grid_size and
+                pos not in blocked)
+        ]
+
+        queue = deque()
+        for pos in start_positions:
+            distances[pos] = 0
+            queue.append(pos)
+
+        while queue:
+            x, y = queue.popleft()
+            for nx, ny in get_adjacent_positions((x, y)):
+                if not (0 <= nx < self.grid_size and 0 <= ny < self.grid_size):
+                    continue
+                if (nx, ny) in blocked:
+                    continue
+                if (nx, ny) in distances:
+                    continue
+
+                distances[(nx, ny)] = distances[(x, y)] + 1
+                queue.append((nx, ny))
+
+        return distances
+
+    def _compute_seat_difficulty_info(self):
+        """
+        各席について、カウンターから配膳可能隣接マスまでの最短経路距離を計算し、
+        easy / medium / hard に分類する。
+
+        difficulty_thresholds が指定されている場合:
+            easy:   distance <= easy_threshold
+            medium: distance <= medium_threshold
+            hard:   otherwise
+
+        指定されていない場合:
+            到達可能席の距離分布を3分割し、自動で easy / medium / hard に分類する。
+            これによりマップ拡大後もカテゴリが空になりにくい。
+        """
+        cell_distances = self._compute_shortest_path_from_counter()
+        seat_path_distances = {}
+
+        for seat in self.seats:
+            delivery_cells = [
+                pos for pos in get_adjacent_positions(seat)
+                if (0 <= pos[0] < self.grid_size and
+                    0 <= pos[1] < self.grid_size and
+                    pos in cell_distances)
+            ]
+
+            if delivery_cells:
+                seat_path_distances[seat] = min(cell_distances[pos] for pos in delivery_cells)
+            else:
+                seat_path_distances[seat] = float('inf')
+
+        finite_distances = sorted(
+            dist for dist in seat_path_distances.values()
+            if np.isfinite(dist)
+        )
+
+        if not finite_distances:
+            seat_difficulties = {seat: 'hard' for seat in self.seats}
+            seats_by_difficulty = {'easy': [], 'medium': [], 'hard': list(self.seats)}
+            return seat_path_distances, seat_difficulties, seats_by_difficulty
+
+        if self.difficulty_thresholds is not None:
+            easy_threshold = self.difficulty_thresholds.get('easy', finite_distances[0])
+            medium_threshold = self.difficulty_thresholds.get('medium', finite_distances[-1])
+        else:
+            # 距離分布を三分割する。席数が少ない場合でも安全にインデックスを丸める。
+            n = len(finite_distances)
+            easy_idx = min(max(int(np.ceil(n / 3.0)) - 1, 0), n - 1)
+            medium_idx = min(max(int(np.ceil(2 * n / 3.0)) - 1, 0), n - 1)
+            easy_threshold = finite_distances[easy_idx]
+            medium_threshold = finite_distances[medium_idx]
+
+        seat_difficulties = {}
+        seats_by_difficulty = {'easy': [], 'medium': [], 'hard': []}
+
+        for seat, dist in seat_path_distances.items():
+            if not np.isfinite(dist):
+                category = 'hard'
+            elif dist <= easy_threshold:
+                category = 'easy'
+            elif dist <= medium_threshold:
+                category = 'medium'
+            else:
+                category = 'hard'
+
+            seat_difficulties[seat] = category
+            seats_by_difficulty[category].append(seat)
+
+        return seat_path_distances, seat_difficulties, seats_by_difficulty
+
+    def _initialize_episode_seat_metrics(self):
+        """1エピソード内の席別評価指標を初期化する。"""
+        self.episode_customer_spawn_heatmap = np.zeros((self.grid_size, self.grid_size), dtype=int)
+        self.episode_order_heatmap = np.zeros((self.grid_size, self.grid_size), dtype=int)
+        self.episode_delivery_heatmap = np.zeros((self.grid_size, self.grid_size), dtype=int)
+        self.episode_unserved_order_heatmap = np.zeros((self.grid_size, self.grid_size), dtype=int)
+        self._unserved_recorded_this_episode = False
+
+    def _record_customer_spawn(self, seat_pos):
+        if seat_pos is None:
+            return
+        x, y = seat_pos
+        self.episode_customer_spawn_heatmap[x, y] += 1
+        self.total_customer_spawn_heatmap[x, y] += 1
+
+    def _record_order_created(self, seat_pos):
+        if seat_pos is None:
+            return
+        x, y = seat_pos
+        self.episode_order_heatmap[x, y] += 1
+        self.total_order_heatmap[x, y] += 1
+
+    def _record_delivery_completed(self, seat_pos):
+        if seat_pos is None:
+            return
+        x, y = seat_pos
+        self.episode_delivery_heatmap[x, y] += 1
+        self.total_delivery_heatmap[x, y] += 1
+
+    def _record_unserved_orders_at_episode_end(self):
+        """エピソード終了時に、注文済みだが未配膳の席を記録する。"""
+        if getattr(self, '_unserved_recorded_this_episode', False):
+            return
+
+        for customer in self.customer_manager.customers:
+            if customer.state == 'ordered':
+                x, y = customer.seat_position
+                self.episode_unserved_order_heatmap[x, y] += 1
+                self.total_unserved_order_heatmap[x, y] += 1
+
+        self._unserved_recorded_this_episode = True
+
+    def get_seat_performance_report(self, use_total=True):
+        """
+        席別・難易度別の評価指標を返す。
+
+        Returns:
+            dict: {
+                'seat_rows': [...],
+                'difficulty_summary': {...}
+            }
+        """
+        if use_total:
+            spawn_hm = self.total_customer_spawn_heatmap
+            order_hm = self.total_order_heatmap
+            delivery_hm = self.total_delivery_heatmap
+            unserved_hm = self.total_unserved_order_heatmap
+        else:
+            spawn_hm = self.episode_customer_spawn_heatmap
+            order_hm = self.episode_order_heatmap
+            delivery_hm = self.episode_delivery_heatmap
+            unserved_hm = self.episode_unserved_order_heatmap
+
+        seat_rows = []
+        difficulty_summary = {
+            'easy': {'spawned': 0, 'ordered': 0, 'delivered': 0, 'unserved': 0},
+            'medium': {'spawned': 0, 'ordered': 0, 'delivered': 0, 'unserved': 0},
+            'hard': {'spawned': 0, 'ordered': 0, 'delivered': 0, 'unserved': 0},
+        }
+
+        for seat in self.seats:
+            x, y = seat
+            spawned = int(spawn_hm[x, y])
+            ordered = int(order_hm[x, y])
+            delivered = int(delivery_hm[x, y])
+            unserved = int(unserved_hm[x, y])
+            success_rate = delivered / ordered if ordered > 0 else 0.0
+            category = self.seat_difficulties.get(seat, 'unknown')
+            path_distance = self.seat_path_distances.get(seat, float('inf'))
+
+            seat_rows.append({
+                'seat': seat,
+                'difficulty': category,
+                'path_distance': path_distance,
+                'spawned': spawned,
+                'ordered': ordered,
+                'delivered': delivered,
+                'unserved': unserved,
+                'success_rate': success_rate,
+            })
+
+            if category in difficulty_summary:
+                difficulty_summary[category]['spawned'] += spawned
+                difficulty_summary[category]['ordered'] += ordered
+                difficulty_summary[category]['delivered'] += delivered
+                difficulty_summary[category]['unserved'] += unserved
+
+        for category, stats in difficulty_summary.items():
+            ordered = stats['ordered']
+            delivered = stats['delivered']
+            stats['success_rate'] = delivered / ordered if ordered > 0 else 0.0
+
+        return {
+            'seat_rows': seat_rows,
+            'difficulty_summary': difficulty_summary,
+        }
+
+    def format_seat_performance_report(self, use_total=True):
+        """席別・難易度別の評価指標をログ出力用の文字列に整形する。"""
+        report = self.get_seat_performance_report(use_total=use_total)
+        lines = []
+
+        lines.append("\n=== Seat Performance by Difficulty ===")
+        lines.append("Difficulty | Spawned | Ordered | Delivered | Unserved | SuccessRate")
+        lines.append("-----------|---------|---------|-----------|----------|------------")
+        for category in ['easy', 'medium', 'hard']:
+            stats = report['difficulty_summary'][category]
+            lines.append(
+                f"{category:10s} | "
+                f"{stats['spawned']:7d} | "
+                f"{stats['ordered']:7d} | "
+                f"{stats['delivered']:9d} | "
+                f"{stats['unserved']:8d} | "
+                f"{stats['success_rate'] * 100:10.2f}%"
+            )
+
+        lines.append("\n=== Seat-wise Delivery Success Rate ===")
+        lines.append("Seat       | Diff     | PathDist | Spawned | Ordered | Delivered | Unserved | SuccessRate")
+        lines.append("-----------|----------|----------|---------|---------|-----------|----------|------------")
+
+        sorted_rows = sorted(
+            report['seat_rows'],
+            key=lambda row: (self._difficulty_sort_key(row['difficulty']), row['path_distance'], row['seat'])
+        )
+
+        for row in sorted_rows:
+            path_distance = row['path_distance']
+            if np.isfinite(path_distance):
+                dist_str = f"{int(path_distance):8d}"
+            else:
+                dist_str = "     inf"
+
+            lines.append(
+                f"{str(row['seat']):10s} | "
+                f"{row['difficulty']:8s} | "
+                f"{dist_str} | "
+                f"{row['spawned']:7d} | "
+                f"{row['ordered']:7d} | "
+                f"{row['delivered']:9d} | "
+                f"{row['unserved']:8d} | "
+                f"{row['success_rate'] * 100:10.2f}%"
+            )
+
+        lines.append("======================================================")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _difficulty_sort_key(category):
+        order = {'easy': 0, 'medium': 1, 'hard': 2}
+        return order.get(category, 99)
+
     def reset(self, seed=None, options=None):
         if seed is not None:
             np.random.seed(seed)
@@ -146,6 +427,11 @@ class RestaurantEnv(ParallelEnv):
         self.seats = seats
         self.counter_pos = counter_pos
         self.entrance_pos = entrance_pos
+
+        # ★追加: 各席の最短経路距離と難易度カテゴリを計算
+        (self.seat_path_distances,
+         self.seat_difficulties,
+         self.seats_by_difficulty) = self._compute_seat_difficulty_info()
         
         self.grid = np.zeros((self.grid_size, self.grid_size), dtype=int)
         for ox, oy in self.obstacles:
@@ -177,6 +463,9 @@ class RestaurantEnv(ParallelEnv):
         
         self.served_count = {agent: 0 for agent in self.agents}
         self.collision_count = {agent: 0 for agent in self.agents}
+
+        # ★追加: このエピソード内の席別評価指標を初期化
+        self._initialize_episode_seat_metrics()
         
         self.customer_manager.customers = []
         self.customer_manager.customer_counter = 0
@@ -222,16 +511,24 @@ class RestaurantEnv(ParallelEnv):
             if not valid_seats:
                 valid_seats = self.seats
 
-            self.customer_manager.spawn_customer(
+            new_customer = self.customer_manager.spawn_customer(
                 self.entrance_pos, 
                 valid_seats,
                 counter_pos=self.counter_pos,
-                min_dist_from_counter=0
+                min_dist_from_counter=0,
+                seat_difficulties=self.seat_difficulties,
+                spawn_mode=self.spawn_mode,
+                difficulty_categories=self.difficulty_categories
             )
+            if new_customer is not None:
+                self._record_customer_spawn(new_customer.seat_position)
+
             self.customer_manager.steps_since_last_spawn = 0
         
         new_orders, new_kitchen = self.customer_manager.update_customers()
         self.active_orders.extend([o for o in new_orders if o not in self.active_orders])
+        for order_pos in new_orders:
+            self._record_order_created(order_pos)
         self.kitchen_queue.extend(new_kitchen)
         
         for item in self.kitchen_queue[:]:
@@ -260,6 +557,7 @@ class RestaurantEnv(ParallelEnv):
             for c in self.customer_manager.customers:
                 if c.state == 'ordered':
                     self.completed_wait_times.append(c.wait_time)
+            self._record_unserved_orders_at_episode_end()
             self.agents = []
 
         observations = {}
@@ -407,13 +705,17 @@ class RestaurantEnv(ParallelEnv):
                             # ① ボーナスの上限(min)を撤廃。待たせた分だけ青天井でボーナスが増える
                             urgency_score = target_customer.wait_time / max_wait_limit
                             
-                            # ② 物理的な「遠距離手当」を導入 (カウンターからのマンハッタン距離)
+                            # ② 物理的な「遠距離手当」を導入
+                            # マンハッタン距離ではなく、障害物を考慮した最短経路距離を使う。
                             cx, cy = self.counter_pos if self.counter_pos else (7, 1)
                             tx, ty = target_customer.seat_position
-                            dist_from_counter = abs(tx - cx) + abs(ty - cy)
+                            manhattan_dist = abs(tx - cx) + abs(ty - cy)
+                            path_dist = self.seat_path_distances.get(target_customer.seat_position, manhattan_dist)
+                            if not np.isfinite(path_dist):
+                                path_dist = manhattan_dist
                             
                             # 1歩遠いごとに基本給に +5.0 点（割引率の減衰を相殺する）
-                            distance_bonus = dist_from_counter * 5.0
+                            distance_bonus = path_dist * 5.0
 
                         base_reward = self.reward_params['delivery']
                         bonus_scale = self.reward_params.get('urgency_bonus_scale', 10.0) # confs.pyで大きく設定していればそのまま適用
@@ -424,7 +726,7 @@ class RestaurantEnv(ParallelEnv):
 
                         self.served_count[agent] += 1
                         
-                        self.total_delivery_heatmap[order_pos[0], order_pos[1]] += 1
+                        self._record_delivery_completed(order_pos)
                         
                         if order_pos in self.active_orders:
                             self.active_orders.remove(order_pos)
@@ -571,3 +873,4 @@ class RestaurantEnv(ParallelEnv):
             avail_actions[agent] = avail
             
         return avail_actions
+

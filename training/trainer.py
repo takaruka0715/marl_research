@@ -86,7 +86,10 @@ class Trainer:
             local_obs_size=5,
             min_customer_dist=current_stage.get('min_customer_dist', 0),
             max_customer_dist=current_stage.get('max_customer_dist', float('inf')),
-            num_food_types=nft, 
+            num_food_types=nft,
+            spawn_mode=current_stage.get('spawn_mode', 'random'),
+            difficulty_categories=current_stage.get('difficulty_categories', None),
+            difficulty_thresholds=current_stage.get('difficulty_thresholds', None),
             config=self.config
         )
 
@@ -178,6 +181,9 @@ class Trainer:
                     min_customer_dist=current_stage.get('min_customer_dist', 0),
                     max_customer_dist=current_stage.get('max_customer_dist', float('inf')),
                     num_food_types=nft,
+                    spawn_mode=current_stage.get('spawn_mode', 'random'),
+                    difficulty_categories=current_stage.get('difficulty_categories', None),
+                    difficulty_thresholds=current_stage.get('difficulty_thresholds', None),
                     coop_factor=self.config.coop_factor,
                     config=self.config
                 )
@@ -288,7 +294,7 @@ class Trainer:
                            f"AvgReward: {team_avg_reward:6.1f} | "
                            f"Total Served: {total_served:4.1f} (A0:{served_a0:.1f}, A1:{served_a1:.1f}) | "
                            f"CollRate: {collision_rate:.3f} | Wait: {avg_wait:.1f} | "
-                           f"ε={eps:.3f}{tar2_msg}")
+                           f"eps={eps:.3f}{tar2_msg}")
                 self._log(log_msg, stage_idx, to_console=True)
 
                 # ★デバッグ用: 100エピソードごとに配膳ヒートマップをファイルのみに描画
@@ -310,6 +316,11 @@ class Trainer:
                     heatmap_msg += row_str + "\n"
                 heatmap_msg += "======================================================\n"
                 self._log(heatmap_msg, stage_idx, to_console=False)
+
+                # ★追加: 席別配膳回数だけでなく、席別・難易度別の成功率もログに保存
+                if hasattr(current_env, 'format_seat_performance_report'):
+                    seat_perf_msg = current_env.format_seat_performance_report(use_total=True)
+                    self._log(seat_perf_msg, stage_idx, to_console=False)
 
         # ======================================================================
         # ▼▼▼ 追加機能: 学習終了時に最良指標（移動平均）を出力 ▼▼▼
@@ -345,12 +356,12 @@ class Trainer:
 
         # 4. ログ出力 (ターミナルにも表示)
         final_msg = (f"\n{'='*70}\n"
-                     f"📊 FINAL PERFORMANCE SUMMARY (Best Moving Avg over 50 eps)\n"
+                     f"[SUMMARY] FINAL PERFORMANCE SUMMARY (Best Moving Avg over 50 eps)\n"
                      f"{'='*70}\n"
-                     f"  ★ Best Team Reward:       {best_reward_ma:8.2f}\n"
-                     f"  ★ Best Total Served:      {best_served_ma:8.2f} dishes\n"
-                     f"  ★ Lowest Collision Rate:  {best_col_rate_ma:8.4f}\n"
-                     f"  ★ Lowest Avg Wait Time:   {best_wait_time_ma:8.2f} steps\n"
+                     f"  - Best Team Reward:       {best_reward_ma:8.2f}\n"
+                     f"  - Best Total Served:      {best_served_ma:8.2f} dishes\n"
+                     f"  - Lowest Collision Rate:  {best_col_rate_ma:8.4f}\n"
+                     f"  - Lowest Avg Wait Time:   {best_wait_time_ma:8.2f} steps\n"
                      f"{'='*70}\n")
         self._log(final_msg, stage_idx, to_console=True)
 
@@ -556,6 +567,12 @@ class Trainer:
         collision_rates = []
         wait_times = []
 
+        # ★追加: 評価時に、複数エピソード分の席別指標を合算する
+        aggregate_spawn_heatmap = np.zeros((env.grid_size, env.grid_size), dtype=int)
+        aggregate_order_heatmap = np.zeros((env.grid_size, env.grid_size), dtype=int)
+        aggregate_delivery_heatmap = np.zeros((env.grid_size, env.grid_size), dtype=int)
+        aggregate_unserved_heatmap = np.zeros((env.grid_size, env.grid_size), dtype=int)
+
         print(f"\nRunning {num_episodes} episodes for benchmark...")
 
         for ep in range(num_episodes):
@@ -590,13 +607,20 @@ class Trainer:
                 avg_wait = 0.0
             wait_times.append(avg_wait)
 
+            # ★追加: このエピソードの席別指標を合算
+            if hasattr(env, 'episode_customer_spawn_heatmap'):
+                aggregate_spawn_heatmap += env.episode_customer_spawn_heatmap
+                aggregate_order_heatmap += env.episode_order_heatmap
+                aggregate_delivery_heatmap += env.episode_delivery_heatmap
+                aggregate_unserved_heatmap += env.episode_unserved_order_heatmap
+
             # 進捗表示
             if (ep + 1) % 10 == 0:
                 print(f"  Processed {ep + 1}/{num_episodes} episodes...", end='\r')
 
         # --- 結果の集計と出力 ---
         print(f"\n{'='*60}")
-        print(f"📊 TEST RESULTS (Average over {num_episodes} episodes)")
+        print(f"[SUMMARY] TEST RESULTS (Average over {num_episodes} episodes)")
         print(f"{'='*60}")
         
         mean_r, std_r = np.mean(total_rewards), np.std(total_rewards)
@@ -604,11 +628,19 @@ class Trainer:
         mean_c, std_c = np.mean(collision_rates), np.std(collision_rates)
         mean_w, std_w = np.mean(wait_times), np.std(wait_times)
 
-        print(f"  ★ Average Reward:       {mean_r:8.2f} ± {std_r:.2f}")
-        print(f"  ★ Average Served:       {mean_s:8.2f} ± {std_s:.2f} dishes")
-        print(f"  ★ Collision Rate:       {mean_c:8.4f} ± {std_c:.4f}")
-        print(f"  ★ Avg Wait Time:        {mean_w:8.2f} ± {std_w:.2f} steps")
+        print(f"  - Average Reward:       {mean_r:8.2f} +/- {std_r:.2f}")
+        print(f"  - Average Served:       {mean_s:8.2f} +/- {std_s:.2f} dishes")
+        print(f"  - Collision Rate:       {mean_c:8.4f} +/- {std_c:.4f}")
+        print(f"  - Avg Wait Time:        {mean_w:8.2f} +/- {std_w:.2f} steps")
         print(f"{'='*60}")
+
+        # ★追加: 評価を「配膳回数」だけでなく「席別成功率・難易度別成功率」で出す
+        if hasattr(env, 'format_seat_performance_report'):
+            env.total_customer_spawn_heatmap = aggregate_spawn_heatmap
+            env.total_order_heatmap = aggregate_order_heatmap
+            env.total_delivery_heatmap = aggregate_delivery_heatmap
+            env.total_unserved_order_heatmap = aggregate_unserved_heatmap
+            print(env.format_seat_performance_report(use_total=True))
         
         print(f"  [Best Record in Test]")
         print(f"    Max Reward: {np.max(total_rewards):.2f}")
