@@ -118,20 +118,21 @@ def create_restaurant_gif(env, agents, filename='restaurant_service_parallel.gif
             break
             
         actions = {}
+        avail_actions = env.get_avail_actions()
         
         with torch.no_grad():
             if 'qmix' in agents:
                 qmix_agent = agents['qmix']
-                actions = qmix_agent.select_actions(observations)
+                actions = qmix_agent.select_actions(observations, avail_actions=avail_actions)
             elif 'vdn' in agents:
                 vdn_agent = agents['vdn']
-                actions = vdn_agent.select_actions(observations)
+                actions = vdn_agent.select_actions(observations, avail_actions=avail_actions)
             else:
                 for agent_id in env.agents:
                     if agent_id in observations:
                         agent_obs = observations[agent_id]
                         dqn_agent = agents[agent_id]
-                        action = dqn_agent.select_action(agent_obs)
+                        action = dqn_agent.select_action(agent_obs, avail_actions=avail_actions[agent_id])
                         actions[agent_id] = action
                         
         observations, rewards, terminations, truncations, infos = env.step(actions)

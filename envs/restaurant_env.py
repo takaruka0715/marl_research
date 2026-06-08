@@ -535,7 +535,7 @@ class RestaurantEnv(ParallelEnv):
             item['time_left'] -= 1
             if item['time_left'] <= 0:
                 self.kitchen_queue.remove(item)
-                self.ready_dishes.append(item)
+                self.ready_dishes.append({'food_type': item.get('food_type')})
 
         max_wait = self.reward_params.get('max_wait_limit', 50.0)
         scale = self.reward_params.get('wait_penalty_scale', 0.1)
@@ -677,7 +677,7 @@ class RestaurantEnv(ParallelEnv):
             
             if target_dish_idx != -1:
                 dish = self.ready_dishes.pop(target_dish_idx)
-                self.agent_inventory[agent].append(dish)
+                self.agent_inventory[agent].append({'food_type': dish.get('food_type')})
                 rewards[agent] += self.reward_params['pickup']
         
         if len(self.agent_inventory[agent]) > 0:
@@ -866,9 +866,15 @@ class RestaurantEnv(ParallelEnv):
                 if abs(x - cx) + abs(y - cy) <= 1:
                     is_near_counter = True
             
-            if not is_near_counter:
-                for a in range(4, 4 + 3):
-                    avail[a] = 0
+            inventory_has_space = len(self.agent_inventory[agent]) < 4
+            ready_food_types = {dish.get('food_type') for dish in self.ready_dishes}
+
+            for food_type in range(3):
+                action = 4 + food_type
+                if (not is_near_counter or
+                    not inventory_has_space or
+                    food_type not in ready_food_types):
+                    avail[action] = 0
             
             avail_actions[agent] = avail
             

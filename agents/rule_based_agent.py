@@ -11,6 +11,7 @@ class SpaceTimePlanner:
         self.env = env
         self.paths = {'agent_0': [], 'agent_1': []}
         self.targets = {'agent_0': None, 'agent_1': None}
+        self.pickup_food_types = {'agent_0': None, 'agent_1': None}
         self.reservations = {}
         self.last_update_step = -1
         self.home_positions = {}
@@ -40,6 +41,7 @@ class SpaceTimePlanner:
         if self.env.num_moves < self.last_update_step:
             self.paths = {'agent_0': [], 'agent_1': []}
             self.targets = {'agent_0': None, 'agent_1': None}
+            self.pickup_food_types = {'agent_0': None, 'agent_1': None}
             self.reservations.clear()
             self.last_update_step = -1
 
@@ -66,6 +68,7 @@ class SpaceTimePlanner:
         """タスク重複を防ぎながら全員のターゲットを決定"""
         targets = {}
         assigned_seats = set()
+        self.pickup_food_types = {aid: None for aid in self.env.possible_agents}
 
         # 料理を持っているエージェントを優先して処理
         def get_agent_priority(aid):
@@ -73,31 +76,57 @@ class SpaceTimePlanner:
 
         agents_sorted = sorted(self.env.possible_agents, key=lambda a: (get_agent_priority(a), a))
 
-        customer_waits = {c.seat_position: c.wait_time 
-                          for c in self.env.customer_manager.customers if c.state == 'ordered'}
+        ordered_customers = [
+            c for c in self.env.customer_manager.customers
+            if c.state == 'ordered'
+        ]
         
         for aid in agents_sorted:
             # 1. 料理を持っている -> 配膳へ
             inventory = self.env.agent_inventory[aid]
             if len(inventory) > 0:
-                dish = inventory[0]
-                targets[aid] = ('delivery', dish['target_seat'])
-                continue
+                best_customer = None
+                for dish in inventory:
+                    food_type = dish.get('food_type')
+                    candidates = [
+                        c for c in ordered_customers
+                        if c.order_type == food_type and c.seat_position not in assigned_seats
+                    ]
+                    if not candidates:
+                        continue
+                    candidate = max(candidates, key=lambda c: c.wait_time)
+                    if best_customer is None or candidate.wait_time > best_customer.wait_time:
+                        best_customer = candidate
+
+                if best_customer is not None:
+                    targets[aid] = ('delivery', best_customer.seat_position)
+                    assigned_seats.add(best_customer.seat_position)
+                    continue
             
             # 2. 料理を持っていない -> 誰にも割り当てられていない一番待っている客の料理を探す
-            best_dish = None
+            best_food_type = None
+            best_customer = None
             max_wait = -1
-            for dish in self.env.ready_dishes:
-                seat = dish['target_seat']
-                if seat in customer_waits and seat not in assigned_seats:
-                    wait_time = customer_waits[seat]
-                    if wait_time > max_wait:
-                        max_wait = wait_time
-                        best_dish = dish
+            ready_food_types = {dish.get('food_type') for dish in self.env.ready_dishes}
+
+            for food_type in ready_food_types:
+                candidates = [
+                    c for c in ordered_customers
+                    if c.order_type == food_type and c.seat_position not in assigned_seats
+                ]
+                if not candidates:
+                    continue
+                candidate = max(candidates, key=lambda c: c.wait_time)
+                if candidate.wait_time > max_wait:
+                    max_wait = candidate.wait_time
+                    best_food_type = food_type
+                    best_customer = candidate
             
-            if best_dish:
+            if best_food_type is not None:
                 targets[aid] = ('pickup', self.env.counter_pos)
-                assigned_seats.add(best_dish['target_seat'])
+                self.pickup_food_types[aid] = best_food_type
+                if best_customer is not None:
+                    assigned_seats.add(best_customer.seat_position)
             else:
                 # 3. やることがなければホーム（待機場所）へ
                 home_pos = self.home_positions.get(aid, (0, 0))
@@ -230,7 +259,7 @@ class SpaceTimePlanner:
             # --- アクション4: Wait ---
             if (x, y, curr_dir, nt) not in visited and (x, y, nt) not in self.reservations:
                 h = heuristic(x, y)
-                heapq.heappush(open_set, (g + 1 + h, g + 1, next(counter), x, y, curr_dir, nt, 4, (x, y, curr_dir, t, action_taken, parent)))
+                heapq.heappush(open_set, (g + 1 + h, g + 1, next(counter), x, y, curr_dir, nt, 3, (x, y, curr_dir, t, action_taken, parent)))
 
         return []
 
@@ -254,7 +283,12 @@ class SpaceTimePlanner:
 
     def get_next_action(self, agent_id):
         if not self.paths[agent_id]:
-            return 4 # 予定がない、または目的地到着済みの場合は待機(インタラクト)
+            target = self.targets.get(agent_id)
+            if target and target[0] == 'pickup':
+                food_type = self.pickup_food_types.get(agent_id)
+                if food_type is not None:
+                    return 4 + int(food_type)
+            return 3 # 予定がない、または目的地到着済みの場合は待機(インタラクト)
         
         step = self.paths[agent_id].pop(0)
         return step[0] # 計算されたアクション(0, 1, 2, 4)を返す

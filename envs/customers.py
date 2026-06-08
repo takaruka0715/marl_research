@@ -137,7 +137,6 @@ class CustomerManager:
                         # 座席情報だけでなく、注文した料理の種類も付与する
                         kitchen_items.append({
                             'time_left': 5,
-                            'target_seat': customer.seat_position,
                             'food_type': customer.order_type
                         })
             elif customer.state == 'ordered':

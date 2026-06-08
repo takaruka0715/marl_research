@@ -50,17 +50,34 @@ class DQNAgent:
         q_values[invalid_mask, 4:] = -1e9
         return q_values
 
+    def _apply_avail_actions(self, q_values, avail_actions):
+        if avail_actions is None:
+            return q_values
+
+        mask = torch.as_tensor(avail_actions, dtype=torch.bool, device=self.device)
+        if mask.dim() == 1:
+            mask = mask.unsqueeze(0)
+        if mask.shape[0] == 1 and q_values.shape[0] > 1:
+            mask = mask.expand(q_values.shape[0], -1)
+
+        return q_values.masked_fill(~mask, -1e9)
+
     def select_action(self, state, **kwargs):
+        avail_actions = kwargs.get('avail_actions')
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         if random.random() < self.epsilon:
             dummy_q = torch.zeros(1, self.action_dim).to(self.device)
             masked_q = self._apply_action_mask(dummy_q, state_tensor)
+            masked_q = self._apply_avail_actions(masked_q, avail_actions)
             valid_actions = (masked_q[0] > -1e8).nonzero(as_tuple=True)[0].tolist()
+            if not valid_actions:
+                valid_actions = list(range(self.action_dim))
             return random.choice(valid_actions)
         
         with torch.no_grad():
             q_values = self.q_network(state_tensor)
             q_values = self._apply_action_mask(q_values, state_tensor)
+            q_values = self._apply_avail_actions(q_values, avail_actions)
             return q_values.argmax().item()
     
     def store_transition(self, state, action, reward, next_state, done):
@@ -148,21 +165,39 @@ class VDNAgent:
         invalid_mask = dist > 1.1
         q_values[invalid_mask, 4:] = -1e9
         return q_values
+
+    def _apply_avail_actions(self, q_values, avail_actions):
+        if avail_actions is None:
+            return q_values
+
+        mask = torch.as_tensor(avail_actions, dtype=torch.bool, device=self.device)
+        if mask.dim() == 1:
+            mask = mask.unsqueeze(0)
+        if mask.shape[0] == 1 and q_values.shape[0] > 1:
+            mask = mask.expand(q_values.shape[0], -1)
+
+        return q_values.masked_fill(~mask, -1e9)
     
     def select_actions(self, states_dict, **kwargs):
+        avail_actions = kwargs.get('avail_actions') or {}
         actions = {}
         for agent_name, state in states_dict.items():
+            agent_avail_actions = avail_actions.get(agent_name) if isinstance(avail_actions, dict) else None
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             if random.random() < self.epsilon:
                 dummy_q = torch.zeros(1, self.action_dim).to(self.device)
                 masked_q = self._apply_action_mask(dummy_q, state_tensor)
+                masked_q = self._apply_avail_actions(masked_q, agent_avail_actions)
                 valid_actions = (masked_q[0] > -1e8).nonzero(as_tuple=True)[0].tolist()
+                if not valid_actions:
+                    valid_actions = list(range(self.action_dim))
                 actions[agent_name] = random.choice(valid_actions)
             else:
                 with torch.no_grad():
                     agent_idx = int(agent_name.split('_')[1])
                     q_local = self.q_network.get_local_q(agent_idx, state_tensor)
                     q_local = self._apply_action_mask(q_local, state_tensor)
+                    q_local = self._apply_avail_actions(q_local, agent_avail_actions)
                     actions[agent_name] = q_local.argmax().item()
         return actions
     
